@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TeleGrab Web</title>
+    <style>
+        body { background: #0d0d0d; color: #00ffcc; font-family: 'Courier New', monospace; padding: 2rem; }
+        input, button { background: #1a1a1a; border: 1px solid #00ffcc; color: #00ffcc; padding: 0.7rem; margin: 0.5rem 0; width: 80%; }
+        button { width: auto; cursor: pointer; }
+        #log { white-space: pre-wrap; background: #111; padding: 1rem; border: 1px solid #333; max-height: 400px; overflow-y: auto; }
+        .status { color: #ffaa00; }
+    </style>
+</head>
+<body>
+    <h1>⚡ TeleGrab Web ⚡</h1>
+    <p>Enter Telegram file URL (e.g., https://t.me/c/123456789/123) or direct CDN link:</p>
+    <input type="text" id="fileUrl" placeholder="https://t.me/c/123456789/123 or https://cdn.telegram.org/file/...">
+    <button onclick="startDownload()">▶ Grab & Download</button>
+    <button onclick="clearLog()">Clear Log</button>
+    <div id="log">[Ready] Waiting for input...</div>
+
+    <script>
+        const logEl = document.getElementById('log');
+        function log(msg, type = 'info') {
+            const prefix = type === 'error' ? '❌' : type === 'done' ? '✅' : 'ℹ️';
+            logEl.innerHTML += `\n${prefix} ${msg}`;
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        async function startDownload() {
+            const raw = document.getElementById('fileUrl').value.trim();
+            if (!raw) { log('Please enter a URL.', 'error'); return; }
+
+            // Resolve Telegram message link to direct CDN URL
+            let cdnUrl = raw;
+            if (raw.includes('t.me/c/')) {
+                log('Resolving Telegram message link...', 'info');
+                try {
+                    const resolved = await resolveTelegramLink(raw);
+                    if (resolved) cdnUrl = resolved;
+                    else { log('Failed to resolve. Use direct CDN link.', 'error'); return; }
+                } catch (e) { log('Resolve error: ' + e.message, 'error'); return; }
+            }
+
+            if (!cdnUrl.startsWith('https://') || !cdnUrl.includes('telegram.org')) {
+                log('Invalid URL. Must be Telegram CDN or t.me link.', 'error');
+                return;
+            }
+
+            log('Starting streamed download...', 'info');
+            try {
+                await streamDownload(cdnUrl);
+                log('Download complete!', 'done');
+            } catch (e) {
+                log('Download failed: ' + e.message, 'error');
+            }
+        }
+
+        async function resolveTelegramLink(link) {
+            // Fetch the page, extract CDN URL from meta or redirect
+            const resp = await fetch(link, { headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 10)' } });
+            const html = await resp.text();
+            // Look for CDN pattern in meta or window
+            const match = html.match(/https:\/\/cdn\.telegram\.org\/file\/[^\s"']+/);
+            if (match) return match[0];
+            // Try og:url
+            const ogMatch = html.match(/<meta\s+property="og:url"\s+content="([^"]+)"/);
+            if (ogMatch && ogMatch[1].includes('cdn.telegram.org')) return ogMatch[1];
+            return null;
+        }
+
+        async function streamDownload(url) {
+            const response = await fetch(url, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                }
+            });
+
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const contentLength = response.headers.get('content-length');
+            const total = contentLength ? parseInt(contentLength, 10) : null;
+            log(`Content-Length: ${total ? (total/1024/1024).toFixed(2) + ' MB' : 'unknown'}`);
+
+            const reader = response.body.getReader();
+            const chunks = [];
+            let received = 0;
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                chunks.push(value);
+                received += value.length;
+                if (total) {
+                    const pct = ((received / total) * 100).toFixed(1);
+                    log(`Progress: ${pct}% (${(received/1024/1024).toFixed(1)} MB)`, 'info');
+                } else {
+                    log(`Downloaded: ${(received/1024/1024).toFixed(1)} MB`, 'info');
+                }
+            }
+
+            // Reassemble and trigger download via blob + download attribute
+            const blob = new Blob(chunks);
+            const a = document.createElement('a');
+            const fileName = url.split('/').pop() || 'telegram_file.bin';
+            a.href = URL.createObjectURL(blob);
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+        }
+
+        function clearLog() {
+            logEl.innerHTML = '[Ready] Log cleared.';
+        }
+    </script>
+</body>
+</html>
