@@ -232,3 +232,56 @@ body.light header h1 { background: linear-gradient(135deg, #007b6e, #005a4e); -w
     button { width: 100%; justify-content: center; }
     .progress-info { flex-direction: column; gap: 0.2rem; }
 }
+/* ... (keep all previous CSS) ... */
+
+/* Add settings panel styles */
+#settingsPanel {
+    background: #0e131c;
+    padding: 1rem;
+    border-radius: 16px;
+    border: 1px solid #2a3344;
+    margin-bottom: 1.5rem;
+}
+#settingsPanel label {
+    display: block;
+    margin: 0.5rem 0 0.2rem;
+    color: #c8d6e5;
+}
+#settingsPanel input {
+    background: #0b0e14;
+    border: 1px solid #2a3344;
+    color: #e0e9f0;
+    padding: 0.5rem;
+    border-radius: 8px;
+}
+#settingsPanel button {
+    background: #2a3344;
+    color: #c8d6e5;
+    padding: 0.4rem 1.2rem;
+    margin: 0.2rem 0.2rem 0 0;
+}
+#settingsPanel hr {
+    border-color: #2a3344;
+    margin: 0.8rem 0;
+}
+#folderDisplay {
+    color: #00f5d4;
+    font-weight: bold;
+}
+
+/* Light theme overrides */
+body.light #settingsPanel {
+    background: #f4f6fa;
+    border-color: #c8d0dc;
+}
+body.light #settingsPanel label { color: #1a1f2a; }
+body.light #settingsPanel input {
+    background: #ffffff;
+    border-color: #c8d0dc;
+    color: #1a1f2a;
+}
+body.light #settingsPanel button {
+    background: #d8e0ec;
+    color: #1a1f2a;
+}
+body.light #folderDisplay { color: #007b6e; }
