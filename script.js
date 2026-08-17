@@ -32,6 +32,7 @@ let selectedFolderHandle = null;
 let currentFileName = '';
 let cancelDownload = false;
 let isDownloading = false;
+let manualCdnUrl = '';
 
 // ===== Theme persistence =====
 function loadTheme() {
@@ -82,175 +83,277 @@ settingsToggle.addEventListener('click', () => {
     settingsPanel.style.display = settingsPanel.style.display === 'none' ? 'block' : 'none';
 });
 
-// ===== Logging with DOM =====
+// ===== Logging =====
 function log(msg, type = 'info') {
     const prefix = type === 'error' ? '❌' : type === 'done' ? '✅' : type === 'warn' ? '⚠️' : type === 'resolving' ? '🔄' : 'ℹ️';
     const logEntry = `\n${prefix} ${msg}`;
     statusLog.innerHTML += logEntry;
     statusLog.scrollTop = statusLog.scrollHeight;
-    console.log(`[TeleGrab] ${msg}`); // Also log to console for debugging
+    console.log(`[TeleGrab] ${msg}`);
 }
 
-// ===== Widget-Based Resolver =====
-async function resolveWithWidget(link) {
-    return new Promise((resolve, reject) => {
-        log('🔄 Loading Telegram widget...', 'resolving');
-        
-        // Create a hidden iframe
-        const iframe = document.createElement('iframe');
-        iframe.style.display = 'none';
-        iframe.src = link + '?embed=1&single=1';
-        iframe.sandbox = 'allow-scripts allow-same-origin';
-        document.body.appendChild(iframe);
-        
-        let resolved = false;
-        let attempts = 0;
-        const maxAttempts = 30; // 15 seconds max
-        
-        const checkInterval = setInterval(() => {
-            attempts++;
-            try {
-                // Try to access iframe content
-                const doc = iframe.contentDocument || iframe.contentWindow?.document;
-                if (doc) {
-                    // Look for download links in the embedded widget
-                    const links = doc.querySelectorAll('a[href*="cdn.telegram.org"]');
-                    for (const link of links) {
-                        const href = link.href;
-                        if (href.includes('cdn.telegram.org/file/')) {
-                            resolved = true;
-                            clearInterval(checkInterval);
-                            document.body.removeChild(iframe);
-                            log('✅ Found file via widget!', 'done');
-                            resolve(href);
-                            return;
-                        }
-                    }
-                    
-                    // Also check meta tags
-                    const metaTags = doc.querySelectorAll('meta[property*="og:"]');
-                    for (const meta of metaTags) {
-                        const content = meta.content;
-                        if (content && content.includes('cdn.telegram.org/file/')) {
-                            resolved = true;
-                            clearInterval(checkInterval);
-                            document.body.removeChild(iframe);
-                            log('✅ Found via meta tag!', 'done');
-                            resolve(content);
-                            return;
-                        }
-                    }
-                }
-            } catch (err) {
-                // Cross-origin access might fail, that's okay
-                // We'll rely on other methods
-            }
-            
-            if (attempts >= maxAttempts) {
-                clearInterval(checkInterval);
-                document.body.removeChild(iframe);
-                if (!resolved) {
-                    log('⚠️ Widget timed out, trying fallback...', 'warn');
-                    resolve(null);
-                }
-            }
-        }, 500);
-        
-        // Iframe load event
-        iframe.onload = () => {
-            log('🔄 Widget loaded, scanning for links...', 'resolving');
-        };
-        
-        // Timeout fallback
-        setTimeout(() => {
-            if (!resolved) {
-                clearInterval(checkInterval);
-                document.body.removeChild(iframe);
-                resolve(null);
-            }
-        }, 20000);
-    });
+// ===== File type detection =====
+function getFileType(url) {
+    const ext = url.split('.').pop().toLowerCase();
+    const types = {
+        'zip': '📦 ZIP Archive',
+        'rar': '📦 RAR Archive',
+        '7z': '📦 7-Zip Archive',
+        'gz': '📦 GZ Archive',
+        'bz2': '📦 BZ2 Archive',
+        'xz': '📦 XZ Archive',
+        'tar': '📦 TAR Archive',
+        'pdf': '📄 PDF Document',
+        'doc': '📄 Word Document',
+        'docx': '📄 Word Document',
+        'xls': '📊 Excel Spreadsheet',
+        'xlsx': '📊 Excel Spreadsheet',
+        'ppt': '📽️ PowerPoint',
+        'pptx': '📽️ PowerPoint',
+        'mp4': '🎬 MP4 Video',
+        'mkv': '🎬 MKV Video',
+        'avi': '🎬 AVI Video',
+        'mov': '🎬 MOV Video',
+        'wmv': '🎬 WMV Video',
+        'flv': '🎬 FLV Video',
+        'webm': '🎬 WebM Video',
+        'mp3': '🎵 MP3 Audio',
+        'wav': '🎵 WAV Audio',
+        'flac': '🎵 FLAC Audio',
+        'aac': '🎵 AAC Audio',
+        'ogg': '🎵 OGG Audio',
+        'jpg': '🖼️ JPEG Image',
+        'jpeg': '🖼️ JPEG Image',
+        'png': '🖼️ PNG Image',
+        'gif': '🖼️ GIF Image',
+        'bmp': '🖼️ BMP Image',
+        'webp': '🖼️ WebP Image',
+        'svg': '🖼️ SVG Image',
+        'exe': '⚙️ Windows Executable',
+        'msi': '⚙️ Windows Installer',
+        'apk': '📱 Android APK',
+        'dmg': '💻 Mac DMG',
+        'pkg': '💻 Mac PKG',
+        'iso': '💿 ISO Disk Image',
+        'img': '💿 IMG Disk Image',
+        'bin': '💿 BIN Disk Image',
+        'txt': '📝 Text File',
+        'log': '📝 Log File',
+        'csv': '📊 CSV Data',
+        'json': '📊 JSON Data',
+        'xml': '📊 XML Data',
+        'yml': '📊 YAML Data',
+        'yaml': '📊 YAML Data',
+    };
+    return types[ext] || `📁 File (${ext.toUpperCase() || 'unknown'})`;
 }
 
-// ===== Direct CDN Fetch with Proxy =====
-async function fetchWithProxy(url) {
-    const proxyUrls = [
-        `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-        `https://corsproxy.io/?${encodeURIComponent(url)}`,
-        `https://proxy.cors.sh/${url}`
-    ];
-    
-    for (const proxy of proxyUrls) {
-        try {
-            log(`🔄 Trying proxy: ${proxy.split('?')[0]}...`, 'resolving');
-            const response = await fetch(proxy, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }
-            });
-            if (response.ok) {
-                const text = await response.text();
-                // Look for CDN links in the response
-                const matches = text.match(/https:\/\/cdn\.telegram\.org\/file\/[^\s"']+/g);
-                if (matches && matches.length > 0) {
-                    log(`✅ Found CDN link via proxy: ${matches[0].substring(0, 50)}...`, 'done');
-                    return matches[0];
-                }
-            }
-        } catch (err) {
-            log(`⚠️ Proxy ${proxy.split('?')[0]} failed: ${err.message}`, 'warn');
+// ===== Add manual CDN input =====
+const manualCdnDiv = document.createElement('div');
+manualCdnDiv.style.cssText = 'margin: 10px 0; padding: 10px; background: #1a1a2e; border-radius: 8px; border: 1px solid #2a2a4e;';
+manualCdnDiv.innerHTML = `
+    <label style="color: #00ffcc; font-size: 0.9rem;">🔗 Manual CDN Link (fallback):</label>
+    <div style="display: flex; gap: 10px; margin-top: 5px; flex-wrap: wrap;">
+        <input type="text" id="manualCdnInput" placeholder="https://cdn.telegram.org/file/..." style="flex: 1; min-width: 200px; padding: 8px; border-radius: 6px; border: 1px solid #2a2a4e; background: #0d0d1a; color: #fff;">
+        <button id="useManualBtn" style="padding: 8px 16px; background: #ff6b35; color: #fff; border: none; border-radius: 6px; cursor: pointer;">Use This</button>
+        <button id="suggestCdnBtn" style="padding: 8px 16px; background: #2a2a4e; color: #fff; border: none; border-radius: 6px; cursor: pointer;">💡 Suggest</button>
+    </div>
+`;
+settingsPanel.appendChild(manualCdnDiv);
+
+const manualCdnInput = document.getElementById('manualCdnInput');
+const useManualBtn = document.getElementById('useManualBtn');
+const suggestCdnBtn = document.getElementById('suggestCdnBtn');
+
+useManualBtn.addEventListener('click', () => {
+    const url = manualCdnInput.value.trim();
+    if (url && url.startsWith('https://') && url.includes('telegram.org')) {
+        manualCdnUrl = url;
+        log(`✅ Manual CDN set: ${url}`, 'done');
+        downloadTelegramFile(url);
+    } else {
+        log('❌ Invalid CDN URL. Must be https://cdn.telegram.org/file/...', 'error');
+    }
+});
+
+suggestCdnBtn.addEventListener('click', () => {
+    const input = fileUrlInput.value.trim();
+    if (input.includes('t.me/')) {
+        const match = input.match(/t\.me\/([^/]+)\/(\d+)/);
+        if (match) {
+            const username = match[1];
+            const postId = match[2];
+            const suggestions = [
+                `https://cdn.telegram.org/file/${username}_${postId}_1.zip`,
+                `https://cdn.telegram.org/file/${username}_${postId}.zip`,
+                `https://cdn.telegram.org/file/${username}_${postId}_1.rar`,
+                `https://cdn.telegram.org/file/${username}_${postId}_1.7z`,
+                `https://cdn.telegram.org/file/${username}_${postId}_1.pdf`,
+                `https://cdn.telegram.org/file/${username}_${postId}_1.mp4`,
+            ];
+            manualCdnInput.value = suggestions[0];
+            log(`💡 Suggested: ${suggestions[0]}`, 'info');
+            log(`💡 Also try: ${suggestions.slice(1).join(', ')}`, 'info');
         }
     }
+});
+
+// ===== Extended CDN construction with brute-force =====
+function constructCdnUrls(link) {
+    const match = link.match(/t\.me\/([^/]+)\/(\d+)/);
+    if (!match) return [];
+    
+    const username = match[1];
+    const postId = match[2];
+    
+    // Prioritize ZIP and common archive formats first
+    const extensions = [
+        '.zip', '.rar', '.7z', '.gz', '.bz2', '.xz', '.tar',  // Archives FIRST
+        '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', // Documents
+        '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', // Videos
+        '.mp3', '.wav', '.flac', '.aac', '.ogg', // Audio
+        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', // Images
+        '.exe', '.msi', '.apk', '.dmg', '.pkg', // Executables
+        '.iso', '.img', '.bin', // Disk images
+        '.txt', '.log', '.csv', '.json', '.xml', '.yml', '.yaml', // Text
+        '', // No extension
+    ];
+    
+    // Try different file ID patterns
+    const patterns = [
+        `${username}_${postId}_1`,
+        `${username}_${postId}_2`,
+        `${username}_${postId}_3`,
+        `${username}_${postId}_4`,
+        `${username}_${postId}_5`,
+        `${username}_${postId}`,
+        `${username}_${postId}_file`,
+        `${username}_${postId}_media`,
+        `file_${postId}`,
+        `${postId}_${username}`,
+        `${username}_${postId}_download`,
+        `${username}_${postId}_archive`,
+        `${username}_${postId}_data`,
+    ];
+    
+    const urls = [];
+    for (const pattern of patterns) {
+        for (const ext of extensions) {
+            const url = `https://cdn.telegram.org/file/${pattern}${ext}`;
+            urls.push(url);
+        }
+    }
+    
+    // Remove duplicates
+    return [...new Set(urls)];
+}
+
+// ===== Bot resolver (placeholder) =====
+async function resolveWithBot(link) {
+    // This is a placeholder - you can implement actual bot logic here
     return null;
 }
 
-// ===== Main Resolver =====
+// ===== Main resolver with brute-force =====
 async function resolveTelegramLink(link) {
     log(`🔄 Resolving: ${link}`, 'resolving');
     
-    // Method 1: Try widget iframe
-    try {
-        const widgetResult = await resolveWithWidget(link);
-        if (widgetResult) return widgetResult;
-    } catch (err) {
-        log(`⚠️ Widget method failed: ${err.message}`, 'warn');
+    // Method 1: Check if it's already a CDN link
+    if (link.startsWith('https://cdn.telegram.org/file/')) {
+        return link;
     }
     
-    // Method 2: Try direct fetch with proxy
+    // Method 2: Try bot resolver (if available)
     try {
-        const proxyResult = await fetchWithProxy(link);
-        if (proxyResult) return proxyResult;
+        const botResult = await resolveWithBot(link);
+        if (botResult) {
+            log('✅ Resolved via bot', 'done');
+            return botResult;
+        }
     } catch (err) {
-        log(`⚠️ Proxy method failed: ${err.message}`, 'warn');
+        log(`⚠️ Bot method failed: ${err.message}`, 'warn');
     }
     
-    // Method 3: Try known patterns for specific channels
-    const match = link.match(/t\.me\/([^/]+)\/(\d+)/);
-    if (match) {
-        const username = match[1];
-        const postId = match[2];
+    // Method 3: Brute-force construction
+    const possibleUrls = constructCdnUrls(link);
+    log(`🔄 Generated ${possibleUrls.length} possible URLs to try...`, 'resolving');
+    
+    // Try in batches of 10 to avoid rate limiting
+    const batchSize = 10;
+    let foundUrl = null;
+    
+    for (let i = 0; i < possibleUrls.length; i += batchSize) {
+        if (cancelDownload) break;
         
-        // For eccouncilcourses/82, try common patterns
-        if (username === 'eccouncilcourses' && postId === '82') {
-            const possibleUrls = [
-                `https://cdn.telegram.org/file/eccouncilcourses_82_1.mp4`,
-                `https://cdn.telegram.org/file/eccouncilcourses_82_1.pdf`,
-                `https://cdn.telegram.org/file/eccouncilcourses_82_1.zip`
-            ];
-            for (const url of possibleUrls) {
+        const batch = possibleUrls.slice(i, i + batchSize);
+        const promises = batch.map(async (url) => {
+            try {
+                const test = await fetch(url, { 
+                    method: 'HEAD',
+                    headers: { 'User-Agent': 'Mozilla/5.0' }
+                });
+                if (test.ok) {
+                    const contentType = test.headers.get('content-type') || 'unknown';
+                    const contentLength = test.headers.get('content-length') || 'unknown';
+                    const sizeMB = contentLength !== 'unknown' ? (parseInt(contentLength) / 1024 / 1024).toFixed(1) : '?';
+                    const fileType = getFileType(url);
+                    log(`✅ Found working URL: ${url}`, 'done');
+                    log(`📁 Type: ${fileType}, Size: ${sizeMB} MB`, 'info');
+                    return url;
+                }
+            } catch {
+                // Silently fail, try next
+            }
+            return null;
+        });
+        
+        const results = await Promise.all(promises);
+        const found = results.find(r => r !== null);
+        if (found) {
+            foundUrl = found;
+            break;
+        }
+        
+        // Log progress every 50 URLs
+        if (i % 50 === 0 && i > 0) {
+            log(`🔄 Tried ${i}/${possibleUrls.length} URLs...`, 'resolving');
+        }
+    }
+    
+    if (foundUrl) {
+        return foundUrl;
+    }
+    
+    // Method 4: Try extracting from the page directly
+    try {
+        log('🔄 Trying direct page extraction...', 'resolving');
+        const response = await fetch(link, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html'
+            }
+        });
+        if (response.ok) {
+            const html = await response.text();
+            const cdnMatches = html.match(/https:\/\/cdn\.telegram\.org\/file\/[^\s"']+/g) || [];
+            for (const url of cdnMatches) {
                 try {
-                    log(`🔄 Trying pattern: ${url}`, 'resolving');
                     const test = await fetch(url, { method: 'HEAD' });
                     if (test.ok) {
-                        log(`✅ Found via pattern!`, 'done');
+                        log(`✅ Found via page extraction: ${url}`, 'done');
+                        const fileType = getFileType(url);
+                        log(`📁 Type: ${fileType}`, 'info');
                         return url;
                     }
                 } catch {}
             }
         }
+    } catch (err) {
+        log(`⚠️ Direct parse failed: ${err.message}`, 'warn');
     }
     
     log('❌ All resolution methods failed.', 'error');
+    log('💡 Use the manual CDN field above or click "Suggest" for ideas.', 'info');
     return null;
 }
 
@@ -287,8 +390,13 @@ async function downloadTelegramFile(input) {
                 cdnUrl = resolved;
                 log('✅ Successfully resolved to CDN URL', 'done');
             } else {
-                log('❌ Could not resolve link.', 'error');
+                // Ask user for manual CDN
+                log('❌ Could not resolve automatically.', 'error');
+                log('💡 Please enter the CDN URL manually in the field above.', 'info');
+                log('💡 Click "Suggest" for likely URLs.', 'info');
+                manualCdnInput.focus();
                 isDownloading = false;
+                progressContainer.style.display = 'none';
                 return;
             }
         }
@@ -301,9 +409,95 @@ async function downloadTelegramFile(input) {
         }
         
         currentFileName = cdnUrl.split('/').pop() || 'telegram_file.bin';
-        log(`⬇️ Downloading: ${currentFileName}`, 'info');
+        // If filename doesn't have extension, add .bin
+        if (!currentFileName.includes('.')) {
+            currentFileName += '.bin';
+        }
         
-        // Download via proxy
+        const fileType = getFileType(cdnUrl);
+        log(`📁 File: ${currentFileName}`, 'info');
+        log(`📁 Type: ${fileType}`, 'info');
+        log(`⬇️ Starting download...`, 'info');
+        
+        // Try direct fetch first
+        try {
+            const response = await fetch(cdnUrl, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+            });
+            
+            if (response.ok) {
+                const contentLength = response.headers.get('content-length');
+                totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
+                
+                if (totalBytes > 0) {
+                    log(`📊 File size: ${(totalBytes / 1024 / 1024).toFixed(1)} MB`, 'info');
+                }
+                
+                const reader = response.body.getReader();
+                const chunks = [];
+                let received = 0;
+                startTime = performance.now();
+                
+                while (true) {
+                    if (cancelDownload) {
+                        await reader.cancel();
+                        throw new Error('Download cancelled');
+                    }
+                    if (paused) {
+                        await new Promise(resolve => {
+                            const checkPause = () => {
+                                if (!paused) resolve();
+                                else setTimeout(checkPause, 200);
+                            };
+                            checkPause();
+                        });
+                    }
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    chunks.push(value);
+                    received += value.length;
+                    receivedBytes = received;
+                    
+                    const pct = totalBytes ? ((received / totalBytes) * 100).toFixed(1) : '?';
+                    const receivedMB = (received / 1024 / 1024).toFixed(1);
+                    const totalMB = totalBytes ? (totalBytes / 1024 / 1024).toFixed(1) : '?';
+                    progressFill.style.width = totalBytes ? `${(received / totalBytes) * 100}%` : '50%';
+                    progressPercent.textContent = totalBytes ? `${pct}%` : '...';
+                    progressSize.textContent = `${receivedMB} MB / ${totalMB} MB`;
+                    const elapsed = (performance.now() - startTime) / 1000;
+                    if (elapsed > 0.5) {
+                        const speed = (received / 1024 / 1024) / elapsed;
+                        progressSpeed.textContent = speed.toFixed(1) + ' MB/s';
+                    }
+                }
+                
+                const blob = new Blob(chunks);
+                await saveFileWithFolder(blob, currentFileName);
+                log(`✅ Complete: ${(blob.size / 1024 / 1024).toFixed(2)} MB`, 'done');
+                
+                // SHA256
+                try {
+                    const buf = await blob.arrayBuffer();
+                    const hash = await crypto.subtle.digest('SHA-256', buf);
+                    const hashHex = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+                    hashValue.textContent = hashHex;
+                    hashDisplay.style.display = 'flex';
+                    log('🔐 SHA256 hash generated', 'done');
+                } catch (err) {
+                    log(`⚠️ Hash calculation failed: ${err.message}`, 'warn');
+                }
+                
+                isDownloading = false;
+                return;
+            }
+        } catch (err) {
+            log(`⚠️ Direct download failed: ${err.message}`, 'warn');
+        }
+        
+        // Fallback: use proxy
+        log('🔄 Trying proxy download...', 'resolving');
         const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(cdnUrl)}`;
         const response = await fetch(proxyUrl, {
             headers: {
@@ -318,187 +512,5 @@ async function downloadTelegramFile(input) {
         const contentLength = response.headers.get('content-length');
         totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
         
-        const reader = response.body.getReader();
-        const chunks = [];
-        let received = 0;
-        startTime = performance.now();
-        
-        while (true) {
-            if (cancelDownload) {
-                await reader.cancel();
-                throw new Error('Download cancelled');
-            }
-            if (paused) {
-                await new Promise(resolve => {
-                    const checkPause = () => {
-                        if (!paused) resolve();
-                        else setTimeout(checkPause, 200);
-                    };
-                    checkPause();
-                });
-            }
-            const { done, value } = await reader.read();
-            if (done) break;
-            chunks.push(value);
-            received += value.length;
-            receivedBytes = received;
-            
-            // Update progress
-            const pct = totalBytes ? ((received / totalBytes) * 100).toFixed(1) : '?';
-            const receivedMB = (received / 1024 / 1024).toFixed(1);
-            const totalMB = totalBytes ? (totalBytes / 1024 / 1024).toFixed(1) : '?';
-            progressFill.style.width = totalBytes ? `${(received / totalBytes) * 100}%` : '50%';
-            progressPercent.textContent = totalBytes ? `${pct}%` : '...';
-            progressSize.textContent = `${receivedMB} MB / ${totalMB} MB`;
-            const elapsed = (performance.now() - startTime) / 1000;
-            if (elapsed > 0.5) {
-                const speed = (received / 1024 / 1024) / elapsed;
-                progressSpeed.textContent = speed.toFixed(1) + ' MB/s';
-            }
-        }
-        
-        const blob = new Blob(chunks);
-        await saveFileWithFolder(blob, currentFileName);
-        log(`✅ Complete: ${(blob.size / 1024 / 1024).toFixed(2)} MB`, 'done');
-        
-        // SHA256
-        try {
-            const buf = await blob.arrayBuffer();
-            const hash = await crypto.subtle.digest('SHA-256', buf);
-            const hashHex = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
-            hashValue.textContent = hashHex;
-            hashDisplay.style.display = 'flex';
-        } catch (err) {
-            log(`⚠️ Hash calculation failed: ${err.message}`, 'warn');
-        }
-        
-    } catch (err) {
-        if (err.message === 'Download cancelled') {
-            log('⛔ Download cancelled.', 'warn');
-        } else {
-            log(`❌ Error: ${err.message}`, 'error');
-            log('💡 Try: 1) Use a VPN 2) Try a different proxy 3) Use direct CDN link', 'info');
-        }
-    } finally {
-        isDownloading = false;
-        pauseBtn.style.display = 'none';
-        resumeBtn.style.display = 'none';
-        setTimeout(() => { progressContainer.style.display = 'none'; }, 3000);
-    }
-}
-
-// ===== Save file =====
-async function saveFileWithFolder(blob, fileName) {
-    if (selectedFolderHandle) {
-        try {
-            const fileHandle = await selectedFolderHandle.getFileHandle(fileName, { create: true });
-            const writable = await fileHandle.createWritable();
-            await writable.write(blob);
-            await writable.close();
-            log(`💾 Saved to: ${selectedFolderHandle.name}/${fileName}`, 'done');
-            return;
-        } catch (err) {
-            log(`Folder save failed: ${err.message}. Falling back to download.`, 'warn');
-        }
-    }
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = fileName;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-}
-
-// ===== Cancel button =====
-const cancelBtn = document.createElement('button');
-cancelBtn.textContent = '⛔ Cancel';
-cancelBtn.id = 'cancelBtn';
-cancelBtn.style.cssText = 'display:none; background:#ff4444; color:white; margin-left:10px;';
-cancelBtn.addEventListener('click', () => {
-    cancelDownload = true;
-    cancelBtn.style.display = 'none';
-    log('⛔ Cancelling...', 'warn');
-});
-document.querySelector('.progress-section').appendChild(cancelBtn);
-
-// ===== Event Listeners =====
-grabBtn.addEventListener('click', () => {
-    const url = fileUrlInput.value.trim();
-    if (url) {
-        downloadTelegramFile(url);
-    } else {
-        log('Please enter a Telegram link.', 'warn');
-    }
-});
-
-bulkGrabBtn.addEventListener('click', () => {
-    const urls = bulkUrls.value.split('\n').filter(u => u.trim());
-    if (!urls.length) {
-        log('Paste at least one URL per line.', 'warn');
-        return;
-    }
-    log(`📥 Starting bulk download of ${urls.length} files...`, 'info');
-    urls.forEach((u, i) => {
-        setTimeout(() => {
-            log(`[${i+1}/${urls.length}] ${u}`, 'info');
-            downloadTelegramFile(u.trim());
-        }, i * 1000);
-    });
-});
-
-dropZone.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    dropZone.classList.add('dragover');
-});
-dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-dropZone.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dropZone.classList.remove('dragover');
-    const file = e.dataTransfer.files[0];
-    if (file && file.type === 'text/plain') {
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-            bulkUrls.value = ev.target.result;
-            log('📂 Loaded URLs from file.', 'done');
-        };
-        reader.readAsText(file);
-    } else {
-        log('Please drop a .txt file with URLs.', 'warn');
-    }
-});
-
-pauseBtn.addEventListener('click', () => {
-    paused = true;
-    pauseBtn.style.display = 'none';
-    resumeBtn.style.display = 'inline-block';
-    log('⏸ Paused', 'warn');
-});
-resumeBtn.addEventListener('click', () => {
-    paused = false;
-    resumeBtn.style.display = 'none';
-    pauseBtn.style.display = 'inline-block';
-    log('▶ Resumed', 'info');
-});
-
-copyHashBtn.addEventListener('click', () => {
-    navigator.clipboard.writeText(hashValue.textContent).then(() => {
-        log('📋 Hash copied!', 'done');
-    }).catch(() => log('Copy failed.', 'error'));
-});
-
-fileUrlInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') grabBtn.click();
-});
-
-// ===== Initialize =====
-log('✅ TeleGrab Pro Widget Edition loaded.', 'done');
-log('💡 Enter a Telegram link and click Grab.', 'info');
-log('🔧 If it fails, check console for debugging info.', 'info');
-
-// Test the link automatically if provided in URL
-const testLink = new URLSearchParams(window.location.search).get('url');
-if (testLink) {
-    fileUrlInput.value = testLink;
-    setTimeout(() => grabBtn.click(), 1000);
-}
+        if (totalBytes > 0) {
+            log(`📊 File size: ${(totalByte
