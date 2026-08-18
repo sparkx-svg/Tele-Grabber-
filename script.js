@@ -513,4 +513,433 @@ async function downloadTelegramFile(input) {
         totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
         
         if (totalBytes > 0) {
-            log(`📊 File size: ${(totalByte
+            log(`📊 File size: ${(totalBytes / 1024 / 1024).toFixed(1)} MB`, 'info');
+        }
+
+        const reader = response.body.getReader();
+        const chunks = [];
+        let received = 0;
+        startTime = performance.now();
+
+        while (true) {
+            if (cancelDownload) {
+                await reader.cancel();
+                throw new Error('Download cancelled');
+            }
+            if (paused) {
+                await new Promise(resolve => {
+                    const checkPause = () => {
+                        if (!paused) resolve();
+                        else setTimeout(checkPause, 200);
+                    };
+                    checkPause();
+                });
+            }
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            received += value.length;
+            receivedBytes = received;
+
+            const pct = totalBytes ? ((received / totalBytes) * 100).toFixed(1) : '?';
+            const receivedMB = (received / 1024 / 1024).toFixed(1);
+            const totalMB = totalBytes ? (totalBytes / 1024 / 1024).toFixed(1) : '?';
+            progressFill.style.width = totalBytes ? `${(received / totalBytes) * 100}%` : '50%';
+            progressPercent.textContent = totalBytes ? `${pct}%` : '...';
+            progressSize.textContent = `${receivedMB} MB / ${totalMB} MB`;
+            const elapsed = (performance.now() - startTime) / 1000;
+            if (elapsed > 0.5) {
+                const speed = (received / 1024 / 1024) / elapsed;
+                progressSpeed.textContent = speed.toFixed(1) + ' MB/s';
+            }
+        }
+
+        const blob = new Blob(chunks);
+        await saveFileWithFolder(blob, currentFileName);
+        log(`✅ Complete: ${(blob.size / 1024 / 1024).toFixed(2)} MB`, 'done');
+
+        try {
+            const buf = await blob.arrayBuffer();
+            const hash = await crypto.subtle.digest('SHA-256', buf);
+            const hashHex = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+            hashValue.textContent = hashHex;
+            hashDisplay.style.display = 'flex';
+            log('🔐 SHA256 hash generated', 'done');
+        } catch (err) {
+            log(`⚠️ Hash calculation failed: ${err.message}`, 'warn');
+        }
+    } catch (err) {
+        if (err.message === 'Download cancelled') {
+            log('⚠️ Download cancelled by user.', 'warn');
+        } else {
+            log(`❌ Download failed: ${err.message}`, 'error');
+        }
+    } finally {
+        isDownloading = false;
+        pauseBtn.style.display = 'none';
+        resumeBtn.style.display = 'none';
+    }
+}
+
+// ===== Save file (File System Access API if a folder was picked, else normal browser download) =====
+async function saveFileWithFolder(blob, fileName) {
+    if (selectedFolderHandle) {
+        try {
+            const fileHandle = await selectedFolderHandle.getFileHandle(fileName, { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(blob);
+            await writable.close();
+            log(`💾 Saved to folder: ${fileName}`, 'done');
+            return;
+        } catch (err) {
+            log(`⚠️ Folder save failed (${err.message}), falling back to browser download.`, 'warn');
+        }
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+}
+
+// ===== Wire up main controls (previously missing — this was the main bug) =====
+grabBtn.addEventListener('click', () => {
+    const input = fileUrlInput.value.trim();
+    if (!input) {
+        log('⚠️ Please paste a URL first.', 'warn');
+        return;
+    }
+    grabAny(input);
+});
+
+fileUrlInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') grabBtn.click();
+});
+
+bulkGrabBtn.addEventListener('click', async () => {
+    const lines = bulkUrls.value.split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length === 0) {
+        log('⚠️ Please paste at least one URL.', 'warn');
+        return;
+    }
+    log(`📥 Starting bulk grab of ${lines.length} URL(s)...`, 'info');
+    for (const line of lines) {
+        if (isDownloading) {
+            // wait for the current download to finish before starting the next
+            await new Promise(resolve => {
+                const check = () => {
+                    if (!isDownloading) resolve();
+                    else setTimeout(check, 300);
+                };
+                check();
+            });
+        }
+        await grabAny(line);
+    }
+    log('✅ Bulk grab finished.', 'done');
+});
+
+dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropZone.classList.add('drag-over');
+});
+dropZone.addEventListener('dragleave', () => {
+    dropZone.classList.remove('drag-over');
+});
+dropZone.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (!file || !file.name.endsWith('.txt')) {
+        log('⚠️ Please drop a .txt file with URLs.', 'warn');
+        return;
+    }
+    const text = await file.text();
+    bulkUrls.value = text;
+    log(`📁 Loaded ${text.split('\n').filter(Boolean).length} URL(s) from ${file.name}`, 'info');
+});
+
+copyHashBtn.addEventListener('click', async () => {
+    try {
+        await navigator.clipboard.writeText(hashValue.textContent);
+        log('📋 Hash copied to clipboard.', 'done');
+    } catch (err) {
+        log(`⚠️ Copy failed: ${err.message}`, 'warn');
+    }
+});
+
+pauseBtn.addEventListener('click', () => {
+    paused = true;
+    pauseBtn.style.display = 'none';
+    resumeBtn.style.display = 'inline-block';
+    log('⏸ Paused.', 'warn');
+});
+
+resumeBtn.addEventListener('click', () => {
+    paused = false;
+    resumeBtn.style.display = 'none';
+    pauseBtn.style.display = 'inline-block';
+    log('▶ Resumed.', 'info');
+});
+
+// =====================================================================
+// ===== MTProto (Option B) — real Telegram user login via backend =====
+// Supports downloads up to 2GB (4GB with Telegram Premium), because the
+// limit lives on the account, not on this client. Requires the small
+// Node.js backend from the /server folder to be deployed somewhere.
+// =====================================================================
+
+const backendUrlInput = document.getElementById('backendUrl');
+const phoneInput = document.getElementById('phoneInput');
+const sendCodeBtn = document.getElementById('sendCodeBtn');
+const codeStep = document.getElementById('codeStep');
+const codeInput = document.getElementById('codeInput');
+const submitCodeBtn = document.getElementById('submitCodeBtn');
+const passwordStep = document.getElementById('passwordStep');
+const passwordInput = document.getElementById('passwordInput');
+const submitPasswordBtn = document.getElementById('submitPasswordBtn');
+const mtprotoLoggedOut = document.getElementById('mtprotoLoggedOut');
+const mtprotoLoggedIn = document.getElementById('mtprotoLoggedIn');
+const logoutBtn = document.getElementById('logoutBtn');
+const mtprotoStatus = document.getElementById('mtprotoStatus');
+
+let mtSessionId = localStorage.getItem('telegrab-mt-session') || null;
+let mtLoggedIn = false;
+
+function mtBackend() {
+    return (backendUrlInput.value || '').trim().replace(/\/+$/, '');
+}
+
+// Restore saved backend URL
+const savedBackend = localStorage.getItem('telegrab-backend-url');
+if (savedBackend) backendUrlInput.value = savedBackend;
+backendUrlInput.addEventListener('change', () => {
+    localStorage.setItem('telegrab-backend-url', backendUrlInput.value.trim());
+});
+
+function setMtStatus(msg) {
+    mtprotoStatus.textContent = msg || '';
+}
+
+function showLoggedIn(isIn) {
+    mtLoggedIn = isIn;
+    mtprotoLoggedIn.style.display = isIn ? 'block' : 'none';
+    mtprotoLoggedOut.style.display = isIn ? 'none' : 'block';
+}
+
+async function checkMtStatus() {
+    const backend = mtBackend();
+    if (!backend || !mtSessionId) return;
+    try {
+        const res = await fetch(`${backend}/auth/status?sessionId=${mtSessionId}`);
+        const data = await res.json();
+        if (data.loggedIn) {
+            showLoggedIn(true);
+            log('🔐 MTProto session restored — logged in.', 'done');
+        } else if (data.needs === 'code') {
+            codeStep.style.display = 'block';
+        } else if (data.needs === 'password') {
+            passwordStep.style.display = 'block';
+        }
+    } catch (err) {
+        // backend unreachable or session expired; ignore silently on load
+    }
+}
+checkMtStatus();
+
+sendCodeBtn.addEventListener('click', async () => {
+    const backend = mtBackend();
+    const phone = phoneInput.value.trim();
+    if (!backend) { log('⚠️ Enter a Backend URL first.', 'warn'); return; }
+    if (!phone) { log('⚠️ Enter your phone number (with country code).', 'warn'); return; }
+
+    setMtStatus('Sending code…');
+    try {
+        const res = await fetch(`${backend}/auth/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to start login');
+        mtSessionId = data.sessionId;
+        localStorage.setItem('telegrab-mt-session', mtSessionId);
+        codeStep.style.display = 'block';
+        setMtStatus('Code sent — check Telegram on your other device.');
+        log('📩 Login code requested. Check your Telegram app.', 'info');
+    } catch (err) {
+        setMtStatus('');
+        log(`❌ Send code failed: ${err.message}`, 'error');
+    }
+});
+
+submitCodeBtn.addEventListener('click', async () => {
+    const backend = mtBackend();
+    const code = codeInput.value.trim();
+    if (!code) { log('⚠️ Enter the code you received.', 'warn'); return; }
+    setMtStatus('Verifying…');
+    try {
+        const res = await fetch(`${backend}/auth/submit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: mtSessionId, field: 'code', value: code }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Verification failed');
+        if (data.status === 'logged_in') {
+            showLoggedIn(true);
+            setMtStatus('');
+            log('✅ MTProto login successful.', 'done');
+        } else if (data.needs === 'password') {
+            passwordStep.style.display = 'block';
+            setMtStatus('2FA enabled — enter your Telegram password.');
+        }
+    } catch (err) {
+        setMtStatus('');
+        log(`❌ Code verification failed: ${err.message}`, 'error');
+    }
+});
+
+submitPasswordBtn.addEventListener('click', async () => {
+    const backend = mtBackend();
+    const password = passwordInput.value;
+    if (!password) { log('⚠️ Enter your 2FA password.', 'warn'); return; }
+    setMtStatus('Verifying password…');
+    try {
+        const res = await fetch(`${backend}/auth/submit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: mtSessionId, field: 'password', value: password }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Password verification failed');
+        if (data.status === 'logged_in') {
+            showLoggedIn(true);
+            setMtStatus('');
+            log('✅ MTProto login successful.', 'done');
+        }
+    } catch (err) {
+        setMtStatus('');
+        log(`❌ Password verification failed: ${err.message}`, 'error');
+    }
+});
+
+logoutBtn.addEventListener('click', async () => {
+    const backend = mtBackend();
+    try {
+        await fetch(`${backend}/auth/logout`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: mtSessionId }),
+        });
+    } catch (_) {}
+    localStorage.removeItem('telegrab-mt-session');
+    mtSessionId = null;
+    showLoggedIn(false);
+    codeStep.style.display = 'none';
+    passwordStep.style.display = 'none';
+    codeInput.value = '';
+    passwordInput.value = '';
+    log('👋 Logged out of MTProto.', 'info');
+});
+
+// ===== Stream a fetch Response into the same progress/hash/save pipeline =====
+async function streamResponseToFile(response, fileName) {
+    const contentLength = response.headers.get('content-length');
+    totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
+    if (totalBytes > 0) log(`📊 File size: ${(totalBytes / 1024 / 1024).toFixed(1)} MB`, 'info');
+
+    const reader = response.body.getReader();
+    const chunks = [];
+    let received = 0;
+    startTime = performance.now();
+
+    while (true) {
+        if (cancelDownload) { await reader.cancel(); throw new Error('Download cancelled'); }
+        if (paused) {
+            await new Promise((resolve) => {
+                const checkPause = () => { if (!paused) resolve(); else setTimeout(checkPause, 200); };
+                checkPause();
+            });
+        }
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        received += value.length;
+        receivedBytes = received;
+
+        const pct = totalBytes ? ((received / totalBytes) * 100).toFixed(1) : '?';
+        const receivedMB = (received / 1024 / 1024).toFixed(1);
+        const totalMB = totalBytes ? (totalBytes / 1024 / 1024).toFixed(1) : '?';
+        progressFill.style.width = totalBytes ? `${(received / totalBytes) * 100}%` : '50%';
+        progressPercent.textContent = totalBytes ? `${pct}%` : '...';
+        progressSize.textContent = `${receivedMB} MB / ${totalMB} MB`;
+        const elapsed = (performance.now() - startTime) / 1000;
+        if (elapsed > 0.5) {
+            progressSpeed.textContent = ((received / 1024 / 1024) / elapsed).toFixed(1) + ' MB/s';
+        }
+    }
+
+    const blob = new Blob(chunks);
+    await saveFileWithFolder(blob, fileName);
+    log(`✅ Complete: ${(blob.size / 1024 / 1024).toFixed(2)} MB`, 'done');
+
+    try {
+        const buf = await blob.arrayBuffer();
+        const hash = await crypto.subtle.digest('SHA-256', buf);
+        hashValue.textContent = Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, '0')).join('');
+        hashDisplay.style.display = 'flex';
+        log('🔐 SHA256 hash generated', 'done');
+    } catch (err) {
+        log(`⚠️ Hash calculation failed: ${err.message}`, 'warn');
+    }
+}
+
+// ===== Download via the MTProto backend (real user login, up to 2GB/4GB) =====
+async function downloadViaMTProto(link) {
+    const backend = mtBackend();
+    if (isDownloading) { log('⚠️ Download already in progress.', 'warn'); return; }
+    isDownloading = true;
+    progressContainer.style.display = 'block';
+    hashDisplay.style.display = 'none';
+    pauseBtn.style.display = 'inline-block';
+    resumeBtn.style.display = 'none';
+    paused = false;
+    cancelDownload = false;
+    receivedBytes = 0;
+    totalBytes = 0;
+
+    try {
+        log(`⬇️ Requesting ${link} via MTProto…`, 'info');
+        const url = `${backend}/download?sessionId=${encodeURIComponent(mtSessionId)}&link=${encodeURIComponent(link)}`;
+        const response = await fetch(url);
+        if (!response.ok) {
+            let msg = `HTTP ${response.status}`;
+            try { const j = await response.json(); if (j.error) msg = j.error; } catch (_) {}
+            throw new Error(msg);
+        }
+        const disposition = response.headers.get('content-disposition') || '';
+        const match = disposition.match(/filename="?([^"]+)"?/);
+        const fileName = match ? decodeURIComponent(match[1]) : (link.split('/').pop() || 'telegram_file.bin');
+        await streamResponseToFile(response, fileName);
+    } catch (err) {
+        if (err.message === 'Download cancelled') log('⚠️ Download cancelled by user.', 'warn');
+        else log(`❌ MTProto download failed: ${err.message}`, 'error');
+    } finally {
+        isDownloading = false;
+        pauseBtn.style.display = 'none';
+        resumeBtn.style.display = 'none';
+    }
+}
+
+// ===== Router: use MTProto when logged in, otherwise fall back to CDN guessing =====
+async function grabAny(input) {
+    if (mtLoggedIn && mtBackend() && input.includes('t.me/')) {
+        await downloadViaMTProto(input);
+    } else {
+        await downloadTelegramFile(input);
+    }
+}

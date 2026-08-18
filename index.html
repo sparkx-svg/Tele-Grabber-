@@ -21,10 +21,28 @@
             <button id="pickFolderBtn">Choose Folder</button>
             <button id="resetFolderBtn">Reset</button>
             <hr style="border-color:#2a3344; margin:0.8rem 0;">
-            <label>🔑 Telegram API (optional):</label>
-            <input type="text" id="apiId" placeholder="API ID" style="width:45%; margin-right:0.5rem;">
-            <input type="text" id="apiHash" placeholder="API Hash" style="width:45%;">
-            <p style="font-size:0.75rem; color:#6a7a8e; margin-top:0.3rem;">Leave blank to use CDN fallback.</p>
+            <label>🔐 MTProto Login (Option B — up to 2GB / 4GB w/ Premium):</label>
+            <div id="mtprotoPanel" style="margin-top:0.5rem;">
+                <input type="text" id="backendUrl" placeholder="Backend URL, e.g. https://telegrab-backend.onrender.com" style="width:100%; margin-bottom:0.5rem;">
+                <div id="mtprotoLoggedOut">
+                    <input type="text" id="phoneInput" placeholder="+91 98765 43210" style="width:60%; margin-right:0.5rem;">
+                    <button id="sendCodeBtn">Send Code</button>
+                    <div id="codeStep" style="display:none; margin-top:0.5rem;">
+                        <input type="text" id="codeInput" placeholder="Login code" style="width:45%; margin-right:0.5rem;">
+                        <button id="submitCodeBtn">Verify</button>
+                    </div>
+                    <div id="passwordStep" style="display:none; margin-top:0.5rem;">
+                        <input type="password" id="passwordInput" placeholder="2FA password" style="width:45%; margin-right:0.5rem;">
+                        <button id="submitPasswordBtn">Confirm</button>
+                    </div>
+                </div>
+                <div id="mtprotoLoggedIn" style="display:none;">
+                    <span style="color:#00ffcc;">✅ Logged in as Telegram user</span>
+                    <button id="logoutBtn" style="margin-left:0.5rem;">Log out</button>
+                </div>
+                <p id="mtprotoStatus" style="font-size:0.75rem; color:#6a7a8e; margin-top:0.3rem;"></p>
+            </div>
+            <p style="font-size:0.75rem; color:#6a7a8e; margin-top:0.3rem;">Not logged in? Falls back to CDN guessing (unreliable).</p>
         </div>
 
         <main>
@@ -68,7 +86,7 @@
         </main>
 
         <footer>
-            <span>🔒 Private & local — no data leaves your browser</span>
+            <span>🔒 CDN mode is local-only. MTProto login sends your phone/code and file requests to the backend URL you configure.</span>
         </footer>
     </div>
 
