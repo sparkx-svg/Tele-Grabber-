@@ -41,6 +41,12 @@
                     <button id="logoutBtn" style="margin-left:0.5rem;">Log out</button>
                 </div>
                 <p id="mtprotoStatus" style="font-size:0.75rem; color:#6a7a8e; margin-top:0.3rem;"></p>
+                <hr style="border-color:#2a3344; margin:0.8rem 0;">
+                <label style="display:flex; align-items:center; gap:0.5rem;">
+                    <input type="checkbox" id="nativeDownloadToggle" checked>
+                    ⚡ Native browser download (recommended)
+                </label>
+                <p style="font-size:0.75rem; color:#6a7a8e; margin-top:0.3rem;">Hands the file straight to Chrome's own downloader — streams to disk, avoids the browser freezing/warning on large files. You lose the custom progress bar, SHA256 hash, and pause/resume; Chrome's own download tray shows progress instead. Turn off for smaller files if you want those features back.</p>
             </div>
             <p style="font-size:0.75rem; color:#6a7a8e; margin-top:0.3rem;">Not logged in? Falls back to CDN guessing (unreliable).</p>
         </div>

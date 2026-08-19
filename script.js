@@ -1076,10 +1076,41 @@ async function downloadViaMTProto(link) {
     }
 }
 
+// ===== Native browser download (no JS memory buffering) =====
+// Instead of fetch()-ing the file into a growing array of chunks then
+// wrapping it all in one giant Blob (which for a 4GB file means the browser
+// tab holds 4GB in RAM — the direct cause of the "page unresponsive" /
+// slow-down warnings on large files), this just hands the URL to Chrome's
+// own downloader. Chrome streams it straight to disk, chunk by chunk,
+// without ever loading the whole thing into the page's memory.
+// Trade-off: no custom progress bar, no SHA256 hash, no pause/resume —
+// Chrome's own download tray takes over and shows its own progress instead.
+function triggerNativeDownload(url) {
+    log('⬇️ Handed off to your browser\'s downloader — check Chrome\'s download tray for progress.', 'info');
+    const a = document.createElement('a');
+    a.href = url;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+}
+
+const nativeDownloadToggle = document.getElementById('nativeDownloadToggle');
+const savedNativePref = localStorage.getItem('telegrab-native-download');
+if (savedNativePref !== null) nativeDownloadToggle.checked = savedNativePref === 'true';
+nativeDownloadToggle.addEventListener('change', () => {
+    localStorage.setItem('telegrab-native-download', nativeDownloadToggle.checked);
+});
+
 // ===== Router: use MTProto when logged in, otherwise fall back to CDN guessing =====
 async function grabAny(input) {
     if (mtLoggedIn && mtBackend() && input.includes('t.me/')) {
-        await downloadViaMTProto(input);
+        if (nativeDownloadToggle.checked) {
+            const url = `${mtBackend()}/download?sessionId=${encodeURIComponent(mtSessionId)}&link=${encodeURIComponent(input)}`;
+            triggerNativeDownload(url);
+        } else {
+            await downloadViaMTProto(input);
+        }
     } else {
         await downloadTelegramFile(input);
     }
