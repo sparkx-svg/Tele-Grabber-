@@ -192,7 +192,7 @@ app.get('/download', async (req, res) => {
     for await (const chunk of client.iterDownload({
       file: msg.media,
       requestSize: 1024 * 1024, // 1MB per chunk (was 512KB)
-      workers: 12,              // 12 parallel connections (up from 8)
+      workers: 8,               // 8 parallel connections — sweet spot found by testing
     })) {
       const ok = res.write(chunk);
       if (!ok) await new Promise((r) => res.once('drain', r));
