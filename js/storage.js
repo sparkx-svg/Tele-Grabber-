@@ -59,6 +59,20 @@ export async function saveFileWithFolder(blob, fileName) {
 // app, a shared device, a browser extension) could lift it and log in as you.
 // This encrypts it with a key derived from a PIN only the user knows, so the
 // stored value is useless without that PIN.
+
+// Some older browsers/contexts (very old mobile browsers, some embedded
+// WebViews, non-HTTPS contexts where the Web Crypto API is unavailable)
+// don't expose crypto.subtle at all. Rather than let every call site crash
+// with a raw TypeError, check once and degrade gracefully: the app still
+// works, it just can't persist an encrypted login across backend restarts —
+// the user simply logs in again when that happens.
+export function isCryptoSupported() {
+    return typeof crypto !== 'undefined'
+        && !!crypto.subtle
+        && typeof crypto.subtle.encrypt === 'function'
+        && typeof crypto.subtle.deriveKey === 'function';
+}
+
 async function deriveKey(pin, salt) {
     const enc = new TextEncoder();
     const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(pin), 'PBKDF2', false, ['deriveKey']);
@@ -101,6 +115,10 @@ export function getPin(promptMessage) {
 }
 
 export async function saveEncryptedSessionString(plainSessionString) {
+    if (!isCryptoSupported()) {
+        log('ℹ️ Your browser doesn\'t support the encryption needed to save your login — you\'ll just need to log in again if the backend restarts. Everything else works normally.', 'info');
+        return;
+    }
     const pin = getPin('Set a PIN to protect your saved Telegram login on this device (4+ digits, remember it — it cannot be recovered):');
     if (!pin) {
         log('⚠️ No PIN set — login won\'t survive a backend restart. You can still use the app normally.', 'warn');
@@ -115,6 +133,7 @@ export async function saveEncryptedSessionString(plainSessionString) {
 }
 
 export async function loadDecryptedSessionString(pin) {
+    if (!isCryptoSupported()) return null;
     const savedEncrypted = localStorage.getItem('telegrab-mt-sessionstring');
     if (!savedEncrypted) return null;
     return decryptSessionString(savedEncrypted, pin);

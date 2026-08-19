@@ -6,6 +6,18 @@ import { isValidCdnUrl, suggestCdnUrls } from './cdnResolver.js';
 import { downloadTelegramFile, grabAny } from './download.js';
 import { initAuth } from './auth.js';
 
+// ===== Global safety net =====
+// Every async call site in this app is meant to catch its own errors, but
+// this is a last-resort backstop: without it, any promise rejection that
+// slips through (a future bug, a browser API behaving unexpectedly) fails
+// silently in the console with zero user-facing feedback instead of
+// crashing the tab. It doesn't fix the underlying issue, just makes sure
+// the user finds out via the status log instead of a stuck-forever UI.
+window.addEventListener('unhandledrejection', (event) => {
+    log(`❌ Unexpected error: ${event.reason?.message || event.reason}`, 'error');
+    event.preventDefault();
+});
+
 // ===== Theme + settings panel =====
 loadTheme();
 initThemeToggle();
@@ -49,13 +61,18 @@ dom.nativeDownloadToggle.addEventListener('change', () => {
 });
 
 // ===== Main grab controls =====
+// Browser event listeners don't propagate rejected promises anywhere useful
+// — an unhandled rejection here would just get silently logged to the
+// console with no user-facing feedback. grabAny() already catches its own
+// errors internally, but this .catch is a defensive backstop in case that
+// ever changes.
 dom.grabBtn.addEventListener('click', () => {
     const input = dom.fileUrlInput.value.trim();
     if (!input) {
         log('⚠️ Please paste a URL first.', 'warn');
         return;
     }
-    grabAny(input);
+    grabAny(input).catch((err) => log(`❌ Unexpected error: ${err.message}`, 'error'));
 });
 
 dom.fileUrlInput.addEventListener('keydown', (e) => {
@@ -69,19 +86,28 @@ dom.bulkGrabBtn.addEventListener('click', async () => {
         return;
     }
     log(`📥 Starting bulk grab of ${lines.length} URL(s)...`, 'info');
-    for (const line of lines) {
-        if (state.isDownloading) {
-            await new Promise((resolve) => {
-                const check = () => {
-                    if (!state.isDownloading) resolve();
-                    else setTimeout(check, 300);
-                };
-                check();
-            });
+    try {
+        for (const line of lines) {
+            if (state.isDownloading) {
+                await new Promise((resolve) => {
+                    const check = () => {
+                        if (!state.isDownloading) resolve();
+                        else setTimeout(check, 300);
+                    };
+                    check();
+                });
+            }
+            // grabAny() already catches its own errors and logs them, so one
+            // bad URL in the batch won't throw here and abort the rest —
+            // but this listener is async and unawaited by the browser, so a
+            // truly unexpected error still needs a local catch to avoid an
+            // unhandled rejection.
+            await grabAny(line);
         }
-        await grabAny(line);
+        log('✅ Bulk grab finished.', 'done');
+    } catch (err) {
+        log(`❌ Bulk grab stopped early: ${err.message}`, 'error');
     }
-    log('✅ Bulk grab finished.', 'done');
 });
 
 // ===== Drag & drop a .txt file of URLs =====
@@ -100,9 +126,13 @@ dom.dropZone.addEventListener('drop', async (e) => {
         log('⚠️ Please drop a .txt file with URLs.', 'warn');
         return;
     }
-    const text = await file.text();
-    dom.bulkUrls.value = text;
-    log(`📁 Loaded ${text.split('\n').filter(Boolean).length} URL(s) from ${file.name}`, 'info');
+    try {
+        const text = await file.text();
+        dom.bulkUrls.value = text;
+        log(`📁 Loaded ${text.split('\n').filter(Boolean).length} URL(s) from ${file.name}`, 'info');
+    } catch (err) {
+        log(`⚠️ Could not read dropped file: ${err.message}`, 'warn');
+    }
 });
 
 // ===== Hash copy =====

@@ -7,6 +7,7 @@ import {
     loadDecryptedSessionString,
     hasSavedSessionString,
     clearSavedSessionString,
+    isCryptoSupported,
 } from './storage.js';
 
 export function mtBackend() {
@@ -51,6 +52,16 @@ export async function checkMtStatus() {
     // Backend forgot us (likely redeployed) — try resuming with the saved
     // session string instead, which logs back in without needing the code again.
     if (!hasSavedSessionString()) return;
+
+    if (!isCryptoSupported()) {
+        // A saved session string exists (saved in a different, crypto-capable
+        // context) but this browser/context can't decrypt it. Don't prompt
+        // for a PIN just to fail — clear the now-unusable saved session and
+        // let the user log in normally instead.
+        clearSavedSessionString();
+        log('ℹ️ Saved login can\'t be restored in this browser (missing crypto support) — please log in again.', 'info');
+        return;
+    }
 
     const pin = getPin('Enter your PIN to resume your saved Telegram login:');
     if (!pin) return; // user cancelled — stay logged out, no harm done
@@ -198,5 +209,11 @@ export function initAuth() {
     dom.submitCodeBtn.addEventListener('click', submitCode);
     dom.submitPasswordBtn.addEventListener('click', submitPassword);
     dom.logoutBtn.addEventListener('click', logout);
-    checkMtStatus();
+    // Fire-and-forget: checkMtStatus() already handles its own expected
+    // failure paths internally, but nothing guarantees a future edit won't
+    // introduce an uncaught rejection here — this keeps that from becoming
+    // an unhandled promise rejection at startup.
+    checkMtStatus().catch((err) => {
+        log(`⚠️ Could not check MTProto login status: ${err.message}`, 'warn');
+    });
 }

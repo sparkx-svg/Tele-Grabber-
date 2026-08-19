@@ -5,6 +5,7 @@
 // reliable path is auth.js + download.js's downloadViaMTProto().
 import { state } from './state.js';
 import { log, getFileType, ALLOWED_EXTENSIONS } from './ui.js';
+import { fetchWithRetry, backoffDelay, sleep } from './net.js';
 
 const ALLOWED_CDN_HOST = 'cdn.telegram.org';
 
@@ -90,28 +91,58 @@ export async function resolveTelegramLink(link) {
     log(`🔄 Generated ${possibleUrls.length} possible URLs to try...`, 'resolving');
 
     const batchSize = 10;
+    // Tracks consecutive batches that hit a transient error (429/5xx/network)
+    // on every URL in the batch — a strong signal the CDN is rate-limiting
+    // us, not that all 10 guesses happened to be wrong. Escalating backoff
+    // between batches in that case (on top of fetchWithRetry's per-request
+    // backoff) keeps us from hammering a host that's already telling us to
+    // slow down.
+    let consecutiveThrottledBatches = 0;
+
     for (let i = 0; i < possibleUrls.length; i += batchSize) {
         if (state.cancelDownload) break;
 
         const batch = possibleUrls.slice(i, i + batchSize);
+        let batchAllTransientFailures = true;
+
         const results = await Promise.all(batch.map(async (url) => {
             try {
-                const test = await fetch(url, { method: 'HEAD', headers: { 'User-Agent': 'Mozilla/5.0' } });
+                const test = await fetchWithRetry(url, {
+                    method: 'HEAD',
+                    headers: { 'User-Agent': 'Mozilla/5.0' },
+                }, {
+                    maxRetries: 2, // this is a brute-force probe, not a real download — keep it cheap
+                    shouldAbort: () => state.cancelDownload,
+                });
                 if (test.ok) {
+                    batchAllTransientFailures = false;
                     const contentLength = test.headers.get('content-length') || 'unknown';
                     const sizeMB = contentLength !== 'unknown' ? (parseInt(contentLength) / 1024 / 1024).toFixed(1) : '?';
                     log(`✅ Found working URL: ${url}`, 'done');
                     log(`📁 Type: ${getFileType(url)}, Size: ${sizeMB} MB`, 'info');
                     return url;
                 }
+                // A clean non-ok, non-retried response (e.g. 404) means this
+                // guess was just wrong — not a sign of throttling.
+                batchAllTransientFailures = false;
             } catch {
-                // Silently fail, try next
+                // Ran out of retries on a transient error (network/429/5xx)
+                // — leave batchAllTransientFailures as-is for this URL.
             }
             return null;
         }));
 
         const found = results.find((r) => r !== null);
         if (found) return found;
+
+        if (batchAllTransientFailures) {
+            consecutiveThrottledBatches += 1;
+            const delay = backoffDelay(consecutiveThrottledBatches, 1000, 20000);
+            log(`⚠️ CDN looks rate-limited — backing off ${(delay / 1000).toFixed(1)}s before continuing...`, 'warn');
+            await sleep(delay);
+        } else {
+            consecutiveThrottledBatches = 0;
+        }
 
         if (i % 50 === 0 && i > 0) {
             log(`🔄 Tried ${i}/${possibleUrls.length} URLs...`, 'resolving');
@@ -120,18 +151,21 @@ export async function resolveTelegramLink(link) {
 
     try {
         log('🔄 Trying direct page extraction...', 'resolving');
-        const response = await fetch(link, {
+        const response = await fetchWithRetry(link, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 Accept: 'text/html',
             },
-        });
+        }, { maxRetries: 3, shouldAbort: () => state.cancelDownload });
         if (response.ok) {
             const html = await response.text();
             const cdnMatches = html.match(/https:\/\/cdn\.telegram\.org\/file\/[^\s"']+/g) || [];
             for (const url of cdnMatches) {
                 try {
-                    const test = await fetch(url, { method: 'HEAD' });
+                    const test = await fetchWithRetry(url, { method: 'HEAD' }, {
+                        maxRetries: 2,
+                        shouldAbort: () => state.cancelDownload,
+                    });
                     if (test.ok) {
                         log(`✅ Found via page extraction: ${url}`, 'done');
                         log(`📁 Type: ${getFileType(url)}`, 'info');
