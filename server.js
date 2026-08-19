@@ -150,7 +150,14 @@ app.get('/download', async (req, res) => {
     if (size) res.setHeader('Content-Length', size.toString());
 
     // Streams chunk by chunk — never buffers the whole file in RAM.
-    for await (const chunk of client.iterDownload({ file: msg.media, requestSize: 512 * 1024 })) {
+    // requestSize: bigger chunks = fewer round trips.
+    // workers: fetches multiple chunks in parallel over separate connections,
+    // then reassembles them in order. This is the main speed lever.
+    for await (const chunk of client.iterDownload({
+      file: msg.media,
+      requestSize: 1024 * 1024, // 1MB per chunk (was 512KB)
+      workers: 4,               // 4 parallel connections
+    })) {
       const ok = res.write(chunk);
       if (!ok) await new Promise((r) => res.once('drain', r));
     }
