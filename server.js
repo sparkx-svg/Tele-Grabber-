@@ -10,6 +10,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const crypto = require('crypto');
 const { TelegramClient } = require('telegram');
 const { StringSession } = require('telegram/sessions');
@@ -25,9 +26,40 @@ if (!API_ID || !API_HASH) {
   process.exit(1);
 }
 
+if (ALLOWED_ORIGIN === '*') {
+  console.warn('⚠️  ALLOWED_ORIGIN is "*" — anyone on the internet can call this backend.');
+  console.warn('⚠️  Set ALLOWED_ORIGIN to your actual frontend URL before sharing this publicly.');
+}
+
 const app = express();
+app.set('trust proxy', 1); // needed on Render/Railway for rate-limit to see real client IPs
+
 app.use(cors({ origin: ALLOWED_ORIGIN === '*' ? true : ALLOWED_ORIGIN.split(',') }));
-app.use(express.json());
+// Body size cap — auth payloads are tiny (phone/code/password strings), so 10kb
+// is generous headroom while still blocking someone trying to flood the process
+// with an oversized request body.
+app.use(express.json({ limit: '10kb' }));
+
+// ---- Rate limiting on auth endpoints --------------------------------------
+// Login attempts are the sensitive surface here: each /auth/start triggers a
+// real Telegram SendCode call, and each /auth/submit is a guessable-code
+// attempt. Cap both per IP so the backend (and the Telegram account behind
+// it) can't be hammered.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5,                   // 5 attempts per IP per window
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts. Please wait a few minutes and try again.' },
+});
+
+const downloadLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 20,             // generous — legitimate bulk-grab usage still fits
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Please slow down.' },
+});
 
 // ---- In-memory session store -------------------------------------------
 // sessions[sessionId] = { client, pending: {field: resolveFn}, loggedIn, needs, error }
@@ -43,7 +75,7 @@ function waitFor(sessionId, field) {
 }
 
 // ---- Step 1: begin login with a phone number ----------------------------
-app.post('/auth/start', async (req, res) => {
+app.post('/auth/start', authLimiter, async (req, res) => {
   const { phone } = req.body || {};
   if (!phone) return res.status(400).json({ error: 'phone is required, e.g. +919876543210' });
 
@@ -93,7 +125,7 @@ app.post('/auth/start', async (req, res) => {
 });
 
 // ---- Step 2: submit the SMS/app code, and password if 2FA is enabled ----
-app.post('/auth/submit', async (req, res) => {
+app.post('/auth/submit', authLimiter, async (req, res) => {
   const { sessionId, field, value } = req.body || {}; // field: 'code' | 'password'
   const s = sessions[sessionId];
   if (!s) return res.status(404).json({ error: 'unknown or expired sessionId' });
@@ -116,7 +148,7 @@ app.post('/auth/submit', async (req, res) => {
 // If the backend restarts (e.g. after a redeploy) and forgets the in-memory
 // session, the frontend calls this to log back in instantly — no phone
 // code needed, since the session string itself proves you're authorized.
-app.post('/auth/resume', async (req, res) => {
+app.post('/auth/resume', authLimiter, async (req, res) => {
   const { sessionString } = req.body || {};
   if (!sessionString) return res.status(400).json({ error: 'sessionString is required' });
 
@@ -157,7 +189,7 @@ app.get('/auth/status', (req, res) => {
 // ---- Download: streams the real file straight from Telegram's DCs -------
 // Works for anything up to the account's cap (2GB, or 4GB with Premium) —
 // no more guessing cdn.telegram.org URLs, this pulls the actual media.
-app.get('/download', async (req, res) => {
+app.get('/download', downloadLimiter, async (req, res) => {
   const { sessionId, link } = req.query;
   const s = sessions[sessionId];
   if (!s || !s.loggedIn) return res.status(401).json({ error: 'not logged in' });
@@ -186,17 +218,32 @@ app.get('/download', async (req, res) => {
     if (size) res.setHeader('Content-Length', size.toString());
 
     // Streams chunk by chunk — never buffers the whole file in RAM.
-    // requestSize: bigger chunks = fewer round trips.
-    // workers: fetches multiple chunks in parallel over separate connections,
-    // then reassembles them in order. This is the main speed lever.
+    // NOTE: workers > 1 previously caused file corruption on large files —
+    // parallel chunks can arrive out of order during reassembly, silently
+    // producing a wrong-but-same-size file (e.g. a "zip" that's actually
+    // scrambled bytes a viewer falls back to showing as text). Correctness
+    // matters more than the speed gain, so this stays sequential (workers: 1).
+    let bytesSent = 0;
     for await (const chunk of client.iterDownload({
       file: msg.media,
-      requestSize: 1024 * 1024, // 1MB per chunk (was 512KB)
-      workers: 8,               // 8 parallel connections — sweet spot found by testing
+      requestSize: 1024 * 1024, // 1MB per chunk
+      workers: 1,               // sequential — guarantees correct byte order
     })) {
+      bytesSent += chunk.length;
       const ok = res.write(chunk);
       if (!ok) await new Promise((r) => res.once('drain', r));
     }
+
+    // Integrity check: if what we actually streamed doesn't match the size
+    // Telegram reported, something went wrong mid-download — better to end
+    // the connection abnormally (browser will show a failed/incomplete
+    // download) than silently hand over a truncated or corrupt file.
+    if (size && bytesSent !== size) {
+      console.error(`Size mismatch for msg ${msgId}: expected ${size}, got ${bytesSent}`);
+      res.destroy(); // abort — do not let the client think this succeeded
+      return;
+    }
+
     res.end();
   } catch (err) {
     console.error(err);

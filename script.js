@@ -92,6 +92,31 @@ function log(msg, type = 'info') {
     console.log(`[TeleGrab] ${msg}`);
 }
 
+// ===== SHA256 hashing (guarded for large files) =====
+// crypto.subtle.digest() needs the ENTIRE file loaded into one contiguous
+// buffer at once. On mobile browsers this can silently fail, hang, or crash
+// the tab for files in the several-hundred-MB+ range — that's almost
+// certainly what caused the earlier "hash error" you saw on an 800MB file.
+// Skipping the hash above this threshold trades off integrity verification
+// for not breaking the download itself, which already matters more.
+const HASH_SIZE_LIMIT_BYTES = 300 * 1024 * 1024; // 300MB
+
+async function hashAndDisplay(blob) {
+    if (blob.size > HASH_SIZE_LIMIT_BYTES) {
+        log(`ℹ️ Skipping SHA256 (file is ${(blob.size / 1024 / 1024).toFixed(0)}MB — over the ${HASH_SIZE_LIMIT_BYTES / 1024 / 1024}MB limit for hashing on-device).`, 'info');
+        return;
+    }
+    try {
+        const buf = await blob.arrayBuffer();
+        const hash = await crypto.subtle.digest('SHA-256', buf);
+        hashValue.textContent = Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, '0')).join('');
+        hashDisplay.style.display = 'flex';
+        log('🔐 SHA256 hash generated', 'done');
+    } catch (err) {
+        log(`⚠️ Hash calculation failed: ${err.message}`, 'warn');
+    }
+}
+
 // ===== File type detection =====
 function getFileType(url) {
     const ext = url.split('.').pop().toLowerCase();
@@ -165,14 +190,52 @@ const manualCdnInput = document.getElementById('manualCdnInput');
 const useManualBtn = document.getElementById('useManualBtn');
 const suggestCdnBtn = document.getElementById('suggestCdnBtn');
 
+// ===== Strict CDN URL validation =====
+// The old check (`startsWith('https://') && includes('telegram.org')`) is
+// trivially spoofed — e.g. "https://telegram.org.evil.com/x" or
+// "https://evil.com/?redirect=telegram.org" both pass that test. This does
+// a real parse: exact hostname match, a locked-down path shape, and an
+// extension allow-list, so nothing outside cdn.telegram.org/file/<name>.<ext>
+// gets through.
+const ALLOWED_CDN_HOST = 'cdn.telegram.org';
+const ALLOWED_EXTENSIONS = new Set([
+    'zip','rar','7z','gz','bz2','xz','tar',
+    'pdf','doc','docx','xls','xlsx','ppt','pptx',
+    'mp4','mkv','avi','mov','wmv','flv','webm',
+    'mp3','wav','flac','aac','ogg',
+    'jpg','jpeg','png','gif','bmp','webp','svg',
+    'exe','msi','apk','dmg','pkg',
+    'iso','img','bin',
+    'txt','log','csv','json','xml','yml','yaml',
+]);
+
+function isValidCdnUrl(input) {
+    let parsed;
+    try {
+        parsed = new URL(input);
+    } catch {
+        return false;
+    }
+    if (parsed.protocol !== 'https:') return false;
+    if (parsed.hostname !== ALLOWED_CDN_HOST) return false;
+    // Path must be exactly /file/<safe-filename>, no traversal, no extra segments.
+    const match = parsed.pathname.match(/^\/file\/([A-Za-z0-9._-]+)$/);
+    if (!match) return false;
+    const filename = match[1];
+    if (filename.includes('..')) return false;
+    const ext = filename.split('.').pop().toLowerCase();
+    if (!ALLOWED_EXTENSIONS.has(ext)) return false;
+    return true;
+}
+
 useManualBtn.addEventListener('click', () => {
     const url = manualCdnInput.value.trim();
-    if (url && url.startsWith('https://') && url.includes('telegram.org')) {
+    if (isValidCdnUrl(url)) {
         manualCdnUrl = url;
         log(`✅ Manual CDN set: ${url}`, 'done');
         downloadTelegramFile(url);
     } else {
-        log('❌ Invalid CDN URL. Must be https://cdn.telegram.org/file/...', 'error');
+        log('❌ Invalid CDN URL. Must look like https://cdn.telegram.org/file/name.ext with a recognized extension.', 'error');
     }
 });
 
@@ -402,7 +465,7 @@ async function downloadTelegramFile(input) {
         }
         
         // Validate URL
-        if (!cdnUrl.startsWith('https://') || !cdnUrl.includes('telegram.org')) {
+        if (!isValidCdnUrl(cdnUrl)) {
             log('❌ Invalid CDN URL.', 'error');
             isDownloading = false;
             return;
@@ -476,18 +539,7 @@ async function downloadTelegramFile(input) {
                 const blob = new Blob(chunks);
                 await saveFileWithFolder(blob, currentFileName);
                 log(`✅ Complete: ${(blob.size / 1024 / 1024).toFixed(2)} MB`, 'done');
-                
-                // SHA256
-                try {
-                    const buf = await blob.arrayBuffer();
-                    const hash = await crypto.subtle.digest('SHA-256', buf);
-                    const hashHex = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
-                    hashValue.textContent = hashHex;
-                    hashDisplay.style.display = 'flex';
-                    log('🔐 SHA256 hash generated', 'done');
-                } catch (err) {
-                    log(`⚠️ Hash calculation failed: ${err.message}`, 'warn');
-                }
+                await hashAndDisplay(blob);
                 
                 isDownloading = false;
                 return;
@@ -557,17 +609,7 @@ async function downloadTelegramFile(input) {
         const blob = new Blob(chunks);
         await saveFileWithFolder(blob, currentFileName);
         log(`✅ Complete: ${(blob.size / 1024 / 1024).toFixed(2)} MB`, 'done');
-
-        try {
-            const buf = await blob.arrayBuffer();
-            const hash = await crypto.subtle.digest('SHA-256', buf);
-            const hashHex = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
-            hashValue.textContent = hashHex;
-            hashDisplay.style.display = 'flex';
-            log('🔐 SHA256 hash generated', 'done');
-        } catch (err) {
-            log(`⚠️ Hash calculation failed: ${err.message}`, 'warn');
-        }
+        await hashAndDisplay(blob);
     } catch (err) {
         if (err.message === 'Download cancelled') {
             log('⚠️ Download cancelled by user.', 'warn');
@@ -709,6 +751,70 @@ const mtprotoStatus = document.getElementById('mtprotoStatus');
 let mtSessionId = localStorage.getItem('telegrab-mt-session') || null;
 let mtLoggedIn = false;
 
+// ===== Encrypt the MTProto session string before it touches localStorage =====
+// A raw session string in localStorage is effectively a saved password for
+// the Telegram account — anyone with access to the browser's storage (another
+// app, a shared device, a browser extension) could lift it and log in as you.
+// This encrypts it with a key derived from a PIN only you know, so the stored
+// value is useless without that PIN. It's not a hardware-backed vault, but
+// it's a real improvement over plaintext for a browser-only app like this.
+let sessionPin = null; // kept in memory only for this tab's lifetime
+
+async function deriveKey(pin, salt) {
+    const enc = new TextEncoder();
+    const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(pin), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey(
+        { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+        keyMaterial,
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['encrypt', 'decrypt']
+    );
+}
+
+async function encryptSessionString(plaintext, pin) {
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const key = await deriveKey(pin, salt);
+    const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(plaintext));
+    const combined = new Uint8Array(salt.length + iv.length + ciphertext.byteLength);
+    combined.set(salt, 0);
+    combined.set(iv, salt.length);
+    combined.set(new Uint8Array(ciphertext), salt.length + iv.length);
+    return btoa(String.fromCharCode(...combined));
+}
+
+async function decryptSessionString(stored, pin) {
+    const combined = Uint8Array.from(atob(stored), (c) => c.charCodeAt(0));
+    const salt = combined.slice(0, 16);
+    const iv = combined.slice(16, 28);
+    const ciphertext = combined.slice(28);
+    const key = await deriveKey(pin, salt);
+    const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+    return new TextDecoder().decode(plaintext);
+}
+
+function getPin(promptMessage) {
+    if (sessionPin) return sessionPin;
+    const entered = window.prompt(promptMessage);
+    if (entered) sessionPin = entered;
+    return sessionPin;
+}
+
+async function saveEncryptedSessionString(plainSessionString) {
+    const pin = getPin('Set a PIN to protect your saved Telegram login on this device (4+ digits, remember it — it cannot be recovered):');
+    if (!pin) {
+        log('⚠️ No PIN set — login won\'t survive a backend restart. You can still use the app normally.', 'warn');
+        return;
+    }
+    try {
+        const encrypted = await encryptSessionString(plainSessionString, pin);
+        localStorage.setItem('telegrab-mt-sessionstring', encrypted);
+    } catch (err) {
+        log(`⚠️ Could not save encrypted session: ${err.message}`, 'warn');
+    }
+}
+
 function mtBackend() {
     return (backendUrlInput.value || '').trim().replace(/\/+$/, '');
 }
@@ -751,8 +857,18 @@ async function checkMtStatus() {
 
     // Backend forgot us (likely redeployed) — try resuming with the saved
     // session string instead, which logs back in without needing the code again.
-    const savedSessionString = localStorage.getItem('telegrab-mt-sessionstring');
-    if (savedSessionString) {
+    const savedEncrypted = localStorage.getItem('telegrab-mt-sessionstring');
+    if (savedEncrypted) {
+        const pin = getPin('Enter your PIN to resume your saved Telegram login:');
+        if (!pin) return; // user cancelled — stay logged out, no harm done
+        let savedSessionString;
+        try {
+            savedSessionString = await decryptSessionString(savedEncrypted, pin);
+        } catch (err) {
+            log('❌ Wrong PIN — could not unlock saved login. Please log in again.', 'error');
+            sessionPin = null;
+            return;
+        }
         try {
             setMtStatus('Resuming previous login…');
             const res = await fetch(`${backend}/auth/resume`, {
@@ -820,7 +936,7 @@ submitCodeBtn.addEventListener('click', async () => {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Verification failed');
         if (data.status === 'logged_in') {
-            if (data.sessionString) localStorage.setItem('telegrab-mt-sessionstring', data.sessionString);
+            if (data.sessionString) await saveEncryptedSessionString(data.sessionString);
             showLoggedIn(true);
             setMtStatus('');
             log('✅ MTProto login successful.', 'done');
@@ -848,7 +964,7 @@ submitPasswordBtn.addEventListener('click', async () => {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Password verification failed');
         if (data.status === 'logged_in') {
-            if (data.sessionString) localStorage.setItem('telegrab-mt-sessionstring', data.sessionString);
+            if (data.sessionString) await saveEncryptedSessionString(data.sessionString);
             showLoggedIn(true);
             setMtStatus('');
             log('✅ MTProto login successful.', 'done');
@@ -871,6 +987,7 @@ logoutBtn.addEventListener('click', async () => {
     localStorage.removeItem('telegrab-mt-session');
     localStorage.removeItem('telegrab-mt-sessionstring');
     mtSessionId = null;
+    sessionPin = null;
     showLoggedIn(false);
     codeStep.style.display = 'none';
     passwordStep.style.display = 'none';
@@ -919,16 +1036,7 @@ async function streamResponseToFile(response, fileName) {
     const blob = new Blob(chunks);
     await saveFileWithFolder(blob, fileName);
     log(`✅ Complete: ${(blob.size / 1024 / 1024).toFixed(2)} MB`, 'done');
-
-    try {
-        const buf = await blob.arrayBuffer();
-        const hash = await crypto.subtle.digest('SHA-256', buf);
-        hashValue.textContent = Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, '0')).join('');
-        hashDisplay.style.display = 'flex';
-        log('🔐 SHA256 hash generated', 'done');
-    } catch (err) {
-        log(`⚠️ Hash calculation failed: ${err.message}`, 'warn');
-    }
+    await hashAndDisplay(blob);
 }
 
 // ===== Download via the MTProto backend (real user login, up to 2GB/4GB) =====
