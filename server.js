@@ -107,8 +107,44 @@ app.post('/auth/submit', async (req, res) => {
   await new Promise((r) => setTimeout(r, 1500));
 
   if (s.error) return res.status(400).json({ error: s.error, needs: s.needs });
-  if (s.loggedIn) return res.json({ status: 'logged_in' });
+  if (s.loggedIn) return res.json({ status: 'logged_in', sessionString: s.sessionString });
   res.json({ status: 'pending', needs: s.needs });
+});
+
+// ---- Resume a previous login using a saved session string ---------------
+// The frontend stores the sessionString (returned above) in localStorage.
+// If the backend restarts (e.g. after a redeploy) and forgets the in-memory
+// session, the frontend calls this to log back in instantly — no phone
+// code needed, since the session string itself proves you're authorized.
+app.post('/auth/resume', async (req, res) => {
+  const { sessionString } = req.body || {};
+  if (!sessionString) return res.status(400).json({ error: 'sessionString is required' });
+
+  const sessionId = crypto.randomUUID();
+  const client = new TelegramClient(new StringSession(sessionString), API_ID, API_HASH, {
+    connectionRetries: 5,
+  });
+
+  try {
+    await client.connect();
+    const authorized = await client.isUserAuthorized();
+    if (!authorized) {
+      await client.disconnect();
+      return res.status(401).json({ error: 'Saved session is no longer valid — please log in again.' });
+    }
+    sessions[sessionId] = {
+      client,
+      pending: {},
+      loggedIn: true,
+      needs: null,
+      error: null,
+      sessionString,
+    };
+    console.log(`✅ Session ${sessionId} resumed from saved session string.`);
+    res.json({ sessionId, status: 'logged_in', sessionString });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ---- Poll login status ---------------------------------------------------
@@ -156,7 +192,7 @@ app.get('/download', async (req, res) => {
     for await (const chunk of client.iterDownload({
       file: msg.media,
       requestSize: 1024 * 1024, // 1MB per chunk (was 512KB)
-      workers: 4,               // 4 parallel connections
+      workers: 8,               // 8 parallel connections (up from 4)
     })) {
       const ok = res.write(chunk);
       if (!ok) await new Promise((r) => res.once('drain', r));

@@ -732,20 +732,50 @@ function showLoggedIn(isIn) {
 
 async function checkMtStatus() {
     const backend = mtBackend();
-    if (!backend || !mtSessionId) return;
-    try {
-        const res = await fetch(`${backend}/auth/status?sessionId=${mtSessionId}`);
-        const data = await res.json();
-        if (data.loggedIn) {
-            showLoggedIn(true);
-            log('🔐 MTProto session restored — logged in.', 'done');
-        } else if (data.needs === 'code') {
-            codeStep.style.display = 'block';
-        } else if (data.needs === 'password') {
-            passwordStep.style.display = 'block';
+    if (!backend) return;
+
+    // First try the normal (in-memory) session, in case backend hasn't restarted.
+    if (mtSessionId) {
+        try {
+            const res = await fetch(`${backend}/auth/status?sessionId=${mtSessionId}`);
+            const data = await res.json();
+            if (data.loggedIn) {
+                showLoggedIn(true);
+                log('🔐 MTProto session restored — logged in.', 'done');
+                return;
+            }
+        } catch (err) {
+            // backend unreachable; fall through to try resume
         }
-    } catch (err) {
-        // backend unreachable or session expired; ignore silently on load
+    }
+
+    // Backend forgot us (likely redeployed) — try resuming with the saved
+    // session string instead, which logs back in without needing the code again.
+    const savedSessionString = localStorage.getItem('telegrab-mt-sessionstring');
+    if (savedSessionString) {
+        try {
+            setMtStatus('Resuming previous login…');
+            const res = await fetch(`${backend}/auth/resume`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionString: savedSessionString }),
+            });
+            const data = await res.json();
+            if (res.ok && data.status === 'logged_in') {
+                mtSessionId = data.sessionId;
+                localStorage.setItem('telegrab-mt-session', mtSessionId);
+                showLoggedIn(true);
+                setMtStatus('');
+                log('🔐 Logged back in automatically (session resumed).', 'done');
+                return;
+            }
+            // Saved session no longer valid — clear it so we don't keep retrying.
+            localStorage.removeItem('telegrab-mt-sessionstring');
+            localStorage.removeItem('telegrab-mt-session');
+            setMtStatus('');
+        } catch (err) {
+            setMtStatus('');
+        }
     }
 }
 checkMtStatus();
@@ -790,6 +820,7 @@ submitCodeBtn.addEventListener('click', async () => {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Verification failed');
         if (data.status === 'logged_in') {
+            if (data.sessionString) localStorage.setItem('telegrab-mt-sessionstring', data.sessionString);
             showLoggedIn(true);
             setMtStatus('');
             log('✅ MTProto login successful.', 'done');
@@ -817,6 +848,7 @@ submitPasswordBtn.addEventListener('click', async () => {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Password verification failed');
         if (data.status === 'logged_in') {
+            if (data.sessionString) localStorage.setItem('telegrab-mt-sessionstring', data.sessionString);
             showLoggedIn(true);
             setMtStatus('');
             log('✅ MTProto login successful.', 'done');
@@ -837,6 +869,7 @@ logoutBtn.addEventListener('click', async () => {
         });
     } catch (_) {}
     localStorage.removeItem('telegrab-mt-session');
+    localStorage.removeItem('telegrab-mt-sessionstring');
     mtSessionId = null;
     showLoggedIn(false);
     codeStep.style.display = 'none';
