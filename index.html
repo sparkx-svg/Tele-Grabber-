@@ -16,39 +16,48 @@
             </div>
         </header>
 
-        <div id="settingsPanel" style="display:none; background:#0e131c; padding:1rem; border-radius:16px; margin-bottom:1.5rem; border:1px solid #2a3344;">
+        <div id="settingsPanel" class="settings-panel hidden">
             <label>📁 Download folder: <span id="folderDisplay">Default (Downloads)</span></label>
             <button id="pickFolderBtn">Choose Folder</button>
             <button id="resetFolderBtn">Reset</button>
-            <hr style="border-color:#2a3344; margin:0.8rem 0;">
+            <hr>
+
+            <label>🔗 Manual CDN Link (fallback):</label>
+            <div class="manual-cdn-row">
+                <input type="text" id="manualCdnInput" class="input-flex" placeholder="https://cdn.telegram.org/file/...">
+                <button id="useManualBtn" class="btn-accent">Use This</button>
+                <button id="suggestCdnBtn" class="btn-muted">💡 Suggest</button>
+            </div>
+            <hr>
+
             <label>🔐 MTProto Login (Option B — up to 2GB / 4GB w/ Premium):</label>
-            <div id="mtprotoPanel" style="margin-top:0.5rem;">
-                <input type="text" id="backendUrl" placeholder="Backend URL, e.g. https://telegrab-backend.onrender.com" style="width:100%; margin-bottom:0.5rem;">
+            <div id="mtprotoPanel">
+                <input type="text" id="backendUrl" class="input-block" placeholder="Backend URL, e.g. https://telegrab-backend.onrender.com">
                 <div id="mtprotoLoggedOut">
-                    <input type="text" id="phoneInput" placeholder="+91 98765 43210" style="width:60%; margin-right:0.5rem;">
+                    <input type="text" id="phoneInput" class="input-half" placeholder="+91 98765 43210">
                     <button id="sendCodeBtn">Send Code</button>
-                    <div id="codeStep" style="display:none; margin-top:0.5rem;">
-                        <input type="text" id="codeInput" placeholder="Login code" style="width:45%; margin-right:0.5rem;">
+                    <div id="codeStep" class="hidden inline-step">
+                        <input type="text" id="codeInput" class="input-half" placeholder="Login code">
                         <button id="submitCodeBtn">Verify</button>
                     </div>
-                    <div id="passwordStep" style="display:none; margin-top:0.5rem;">
-                        <input type="password" id="passwordInput" placeholder="2FA password" style="width:45%; margin-right:0.5rem;">
+                    <div id="passwordStep" class="hidden inline-step">
+                        <input type="password" id="passwordInput" class="input-half" placeholder="2FA password">
                         <button id="submitPasswordBtn">Confirm</button>
                     </div>
                 </div>
-                <div id="mtprotoLoggedIn" style="display:none;">
-                    <span style="color:#00ffcc;">✅ Logged in as Telegram user</span>
-                    <button id="logoutBtn" style="margin-left:0.5rem;">Log out</button>
+                <div id="mtprotoLoggedIn" class="hidden">
+                    <span class="status-ok">✅ Logged in as Telegram user</span>
+                    <button id="logoutBtn" class="btn-inline">Log out</button>
                 </div>
-                <p id="mtprotoStatus" style="font-size:0.75rem; color:#6a7a8e; margin-top:0.3rem;"></p>
-                <hr style="border-color:#2a3344; margin:0.8rem 0;">
-                <label style="display:flex; align-items:center; gap:0.5rem;">
+                <p id="mtprotoStatus" class="hint-text"></p>
+                <hr>
+                <label class="checkbox-row">
                     <input type="checkbox" id="nativeDownloadToggle" checked>
                     ⚡ Native browser download (recommended)
                 </label>
-                <p style="font-size:0.75rem; color:#6a7a8e; margin-top:0.3rem;">Hands the file straight to Chrome's own downloader — streams to disk, avoids the browser freezing/warning on large files. You lose the custom progress bar, SHA256 hash, and pause/resume; Chrome's own download tray shows progress instead. Turn off for smaller files if you want those features back.</p>
+                <p class="hint-text">Hands the file straight to your browser's own downloader — streams to disk, avoids the tab freezing/warning on large files. You lose the custom progress bar, SHA256 hash, and pause/resume; the browser's own download tray shows progress instead. Turn off for smaller files if you want those features back.</p>
             </div>
-            <p style="font-size:0.75rem; color:#6a7a8e; margin-top:0.3rem;">Not logged in? Falls back to CDN guessing (unreliable).</p>
+            <p class="hint-text">Not logged in? Falls back to CDN guessing (unreliable).</p>
         </div>
 
         <main>
@@ -68,23 +77,23 @@
             </section>
 
             <section class="progress-section">
-                <div id="progressContainer" style="display:none;">
+                <div id="progressContainer" class="hidden">
                     <div class="progress-bar-bg">
-                        <div id="progressFill" class="progress-fill" style="width:0%;"></div>
+                        <div id="progressFill" class="progress-fill"></div>
                     </div>
                     <div class="progress-info">
                         <span id="progressPercent">0%</span>
                         <span id="progressSize">0 MB / 0 MB</span>
                         <span id="progressSpeed">0 MB/s</span>
                     </div>
-                    <button id="pauseBtn" style="display:none;">⏸ Pause</button>
-                    <button id="resumeBtn" style="display:none;">▶ Resume</button>
+                    <button id="pauseBtn" class="hidden">⏸ Pause</button>
+                    <button id="resumeBtn" class="hidden">▶ Resume</button>
                 </div>
                 <div id="statusLog" class="status-log"></div>
             </section>
 
             <section class="hash-section">
-                <div id="hashDisplay" style="display:none;">
+                <div id="hashDisplay" class="hidden">
                     <strong>SHA256:</strong> <span id="hashValue"></span>
                     <button id="copyHashBtn">📋 Copy</button>
                 </div>
@@ -96,6 +105,6 @@
         </footer>
     </div>
 
-    <script src="script.js"></script>
+    <script type="module" src="js/main.js"></script>
 </body>
-                            </html>
+</html>

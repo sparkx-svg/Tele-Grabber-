@@ -113,7 +113,7 @@ button:active {
     transition: 0.25s;
 }
 
-.drop-zone.dragover {
+.drop-zone.drag-over {
     border-color: #00f5d4;
     background: #1a2a2f;
 }
@@ -285,3 +285,71 @@ body.light #settingsPanel button {
     color: #1a1f2a;
 }
 body.light #folderDisplay { color: #007b6e; }
+
+/* ===== Utility ===== */
+.hidden {
+    display: none !important;
+}
+
+/* ===== Form field variants (replaces inline style="width:..." etc.) ===== */
+.input-flex {
+    flex: 1;
+    min-width: 200px;
+}
+
+.input-block {
+    width: 100%;
+    margin-bottom: 0.5rem;
+}
+
+.input-half {
+    width: 45%;
+    margin-right: 0.5rem;
+}
+
+/* ===== Buttons (replaces inline style="background:..." etc.) ===== */
+.btn-accent {
+    background: #ff6b35;
+    color: #fff;
+}
+
+.btn-muted {
+    background: #2a3344;
+    color: #c8d6e5;
+}
+
+.btn-inline {
+    margin-left: 0.5rem;
+}
+
+/* ===== Manual CDN fallback row ===== */
+.manual-cdn-row {
+    display: flex;
+    gap: 10px;
+    margin-top: 5px;
+    flex-wrap: wrap;
+}
+
+/* ===== MTProto panel bits ===== */
+.inline-step {
+    margin-top: 0.5rem;
+}
+
+.status-ok {
+    color: #00ffcc;
+}
+
+.hint-text {
+    font-size: 0.75rem;
+    color: #6a7a8e;
+    margin-top: 0.3rem;
+}
+
+.checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+body.light .status-ok { color: #007b6e; }
+body.light .hint-text { color: #5a6a7e; }

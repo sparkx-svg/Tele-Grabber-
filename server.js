@@ -14,6 +14,7 @@ const rateLimit = require('express-rate-limit');
 const crypto = require('crypto');
 const { TelegramClient } = require('telegram');
 const { StringSession } = require('telegram/sessions');
+const { createSessionStore } = require('./store/sessionStore');
 
 const API_ID = parseInt(process.env.API_ID, 10);
 const API_HASH = process.env.API_HASH;
@@ -61,16 +62,30 @@ const downloadLimiter = rateLimit({
   message: { error: 'Too many requests. Please slow down.' },
 });
 
-// ---- In-memory session store -------------------------------------------
-// sessions[sessionId] = { client, pending: {field: resolveFn}, loggedIn, needs, error }
-// NOTE: in-memory means logins are lost on server restart. For a persistent
-// setup, save `sessions[id].sessionString` to a small DB/file keyed by a
-// user-chosen PIN and reload it with `new StringSession(savedString)`.
-const sessions = {};
+// ---- Session storage --------------------------------------------------
+// Two layers, deliberately kept separate:
+//
+// 1. `localClients` — live GramJS `TelegramClient` instances (real TCP
+//    sockets) plus their pending phone-code/2FA-password resolvers. These
+//    CANNOT be serialized or shared across processes, so they always live
+//    in this process's memory, regardless of store backend.
+//
+// 2. `store` — the account-status metadata (loggedIn / needs / error /
+//    sessionString) that decides what the frontend sees. This is the part
+//    that's pluggable: `createSessionStore()` returns an in-memory Map by
+//    default, or a Redis-backed store when REDIS_URL is set, so status
+//    checks survive a restart and work across multiple instances behind a
+//    load balancer. If a request lands on an instance that doesn't hold the
+//    live client for a `loggedIn` session (e.g. after a redeploy, or a
+//    different instance than the one that ran /auth/start), the route below
+//    tells the frontend to call /auth/resume — which the frontend already
+//    does automatically using the saved (encrypted) session string.
+const localClients = new Map(); // sessionId -> { client, pending: {field: resolveFn} }
+const store = createSessionStore();
 
 function waitFor(sessionId, field) {
   return new Promise((resolve) => {
-    sessions[sessionId].pending[field] = resolve;
+    localClients.get(sessionId).pending[field] = resolve;
   });
 }
 
@@ -83,7 +98,10 @@ app.post('/auth/start', authLimiter, async (req, res) => {
   const client = new TelegramClient(new StringSession(''), API_ID, API_HASH, {
     connectionRetries: 5,
   });
-  sessions[sessionId] = { client, pending: {}, loggedIn: false, needs: 'code', error: null };
+  localClients.set(sessionId, { client, pending: {} });
+
+  const meta = { loggedIn: false, needs: 'code', error: null, sessionString: null };
+  await store.set(sessionId, meta);
 
   try {
     await client.connect();
@@ -95,30 +113,35 @@ app.post('/auth/start', authLimiter, async (req, res) => {
       .start({
         phoneNumber: async () => phone,
         phoneCode: async () => {
-          sessions[sessionId].needs = 'code';
+          meta.needs = 'code';
+          await store.set(sessionId, meta);
           return waitFor(sessionId, 'code');
         },
         password: async () => {
-          sessions[sessionId].needs = 'password';
+          meta.needs = 'password';
+          await store.set(sessionId, meta);
           return waitFor(sessionId, 'password');
         },
-        onError: (err) => {
-          sessions[sessionId].error = err.message;
+        onError: async (err) => {
+          meta.error = err.message;
+          await store.set(sessionId, meta);
         },
       })
-      .then(() => {
-        sessions[sessionId].loggedIn = true;
-        sessions[sessionId].needs = null;
-        sessions[sessionId].sessionString = client.session.save();
+      .then(async () => {
+        meta.loggedIn = true;
+        meta.needs = null;
+        meta.sessionString = client.session.save();
+        await store.set(sessionId, meta);
         console.log(`✅ Session ${sessionId} logged in.`);
       })
-      .catch((err) => {
-        sessions[sessionId].error = err.message;
+      .catch(async (err) => {
+        meta.error = err.message;
+        await store.set(sessionId, meta);
       });
 
     // Give SendCode a moment to fire before responding.
     await new Promise((r) => setTimeout(r, 1500));
-    res.json({ sessionId, needs: sessions[sessionId].needs, error: sessions[sessionId].error });
+    res.json({ sessionId, needs: meta.needs, error: meta.error });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -127,27 +150,30 @@ app.post('/auth/start', authLimiter, async (req, res) => {
 // ---- Step 2: submit the SMS/app code, and password if 2FA is enabled ----
 app.post('/auth/submit', authLimiter, async (req, res) => {
   const { sessionId, field, value } = req.body || {}; // field: 'code' | 'password'
-  const s = sessions[sessionId];
-  if (!s) return res.status(404).json({ error: 'unknown or expired sessionId' });
-  if (!s.pending[field]) {
-    return res.status(400).json({ error: `not currently waiting for "${field}"`, needs: s.needs });
+  const local = localClients.get(sessionId);
+  const meta = await store.get(sessionId);
+  if (!local || !meta) return res.status(404).json({ error: 'unknown or expired sessionId' });
+  if (!local.pending[field]) {
+    return res.status(400).json({ error: `not currently waiting for "${field}"`, needs: meta.needs });
   }
 
-  s.pending[field](value);
-  delete s.pending[field];
+  local.pending[field](value);
+  delete local.pending[field];
 
   await new Promise((r) => setTimeout(r, 1500));
 
-  if (s.error) return res.status(400).json({ error: s.error, needs: s.needs });
-  if (s.loggedIn) return res.json({ status: 'logged_in', sessionString: s.sessionString });
-  res.json({ status: 'pending', needs: s.needs });
+  const updated = await store.get(sessionId);
+  if (updated.error) return res.status(400).json({ error: updated.error, needs: updated.needs });
+  if (updated.loggedIn) return res.json({ status: 'logged_in', sessionString: updated.sessionString });
+  res.json({ status: 'pending', needs: updated.needs });
 });
 
 // ---- Resume a previous login using a saved session string ---------------
 // The frontend stores the sessionString (returned above) in localStorage.
-// If the backend restarts (e.g. after a redeploy) and forgets the in-memory
-// session, the frontend calls this to log back in instantly — no phone
-// code needed, since the session string itself proves you're authorized.
+// If the backend forgot this session (restart, redeploy, or a request that
+// landed on a different instance), the frontend calls this to log back in
+// instantly — no phone code needed, since the session string itself proves
+// you're authorized.
 app.post('/auth/resume', authLimiter, async (req, res) => {
   const { sessionString } = req.body || {};
   if (!sessionString) return res.status(400).json({ error: 'sessionString is required' });
@@ -164,14 +190,8 @@ app.post('/auth/resume', authLimiter, async (req, res) => {
       await client.disconnect();
       return res.status(401).json({ error: 'Saved session is no longer valid — please log in again.' });
     }
-    sessions[sessionId] = {
-      client,
-      pending: {},
-      loggedIn: true,
-      needs: null,
-      error: null,
-      sessionString,
-    };
+    localClients.set(sessionId, { client, pending: {} });
+    await store.set(sessionId, { loggedIn: true, needs: null, error: null, sessionString });
     console.log(`✅ Session ${sessionId} resumed from saved session string.`);
     res.json({ sessionId, status: 'logged_in', sessionString });
   } catch (err) {
@@ -180,10 +200,10 @@ app.post('/auth/resume', authLimiter, async (req, res) => {
 });
 
 // ---- Poll login status ---------------------------------------------------
-app.get('/auth/status', (req, res) => {
-  const s = sessions[req.query.sessionId];
-  if (!s) return res.status(404).json({ error: 'unknown sessionId' });
-  res.json({ loggedIn: !!s.loggedIn, needs: s.needs, error: s.error });
+app.get('/auth/status', async (req, res) => {
+  const meta = await store.get(req.query.sessionId);
+  if (!meta) return res.status(404).json({ error: 'unknown sessionId' });
+  res.json({ loggedIn: !!meta.loggedIn, needs: meta.needs, error: meta.error });
 });
 
 // ---- Download: streams the real file straight from Telegram's DCs -------
@@ -191,8 +211,19 @@ app.get('/auth/status', (req, res) => {
 // no more guessing cdn.telegram.org URLs, this pulls the actual media.
 app.get('/download', downloadLimiter, async (req, res) => {
   const { sessionId, link } = req.query;
-  const s = sessions[sessionId];
-  if (!s || !s.loggedIn) return res.status(401).json({ error: 'not logged in' });
+  const meta = await store.get(sessionId);
+  if (!meta || !meta.loggedIn) return res.status(401).json({ error: 'not logged in' });
+
+  const local = localClients.get(sessionId);
+  if (!local) {
+    // Metadata says logged in, but this instance doesn't hold the live
+    // client (e.g. after a redeploy, or a different instance behind a load
+    // balancer handled the login). The frontend already knows how to
+    // recover from this via /auth/resume using its saved session string.
+    return res.status(409).json({
+      error: 'Session not active on this server instance. Call /auth/resume with the saved session string and retry.',
+    });
+  }
 
   const match = String(link || '').match(/t\.me\/(?:c\/)?([^/]+)\/(\d+)/);
   if (!match) return res.status(400).json({ error: 'link must look like https://t.me/channel/123' });
@@ -200,7 +231,7 @@ app.get('/download', downloadLimiter, async (req, res) => {
   const msgId = parseInt(msgIdStr, 10);
 
   try {
-    const client = s.client;
+    const client = local.client;
     const entityRef = /^\d+$/.test(chatPart) ? Number(chatPart) : chatPart;
     const entity = await client.getEntity(entityRef);
     const messages = await client.getMessages(entity, { ids: [msgId] });
@@ -254,11 +285,13 @@ app.get('/download', downloadLimiter, async (req, res) => {
 
 // ---- Log out / drop a session --------------------------------------------
 app.post('/auth/logout', async (req, res) => {
-  const s = sessions[req.body.sessionId];
-  if (s) {
-    try { await s.client.disconnect(); } catch (_) {}
-    delete sessions[req.body.sessionId];
+  const { sessionId } = req.body || {};
+  const local = localClients.get(sessionId);
+  if (local) {
+    try { await local.client.disconnect(); } catch (_) {}
+    localClients.delete(sessionId);
   }
+  await store.delete(sessionId);
   res.json({ status: 'ok' });
 });
 

@@ -13,6 +13,9 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5"
   },
+  "optionalDependencies": {
+    "ioredis": "^5.4.1"
+  },
   "engines": {
     "node": ">=18"
   }
