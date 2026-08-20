@@ -18,6 +18,11 @@ export const MAX_STREAM_RETRIES = 6;
 // here would make brute-forcing painfully slow.
 export const CDN_PROBE_MAX_RETRIES = 2;
 
+// Above this size, if no save folder is selected, warn that the whole file
+// will sit in the browser tab's memory (and be lost entirely if the
+// download ultimately fails) rather than streaming straight to disk.
+export const LARGE_FILE_WARNING_BYTES = 500 * 1024 * 1024;
+
 // How many URLs resolveTelegramLink() probes concurrently per batch when
 // brute-forcing cdn.telegram.org filenames.
 export const CDN_PROBE_BATCH_SIZE = 10;

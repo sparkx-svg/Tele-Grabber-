@@ -49,22 +49,39 @@ export async function checkMtStatus() {
         }
     }
 
-    // Backend forgot us (likely redeployed) — try resuming with the saved
-    // session string instead, which logs back in without needing the code again.
-    if (!hasSavedSessionString()) return;
+    const resumed = await attemptSessionResume();
+    if (resumed) showLoggedIn(true);
+}
+
+/**
+ * Resumes a login using the saved (encrypted) session string — the same
+ * recovery path used on page load when the backend has forgotten us
+ * (redeploy, restart, or a request landing on a different instance behind a
+ * load balancer). Also called mid-download (see download.js) when the
+ * backend reports the live session isn't active on the instance handling
+ * that request, so a dropped connection mid-transfer doesn't have to mean
+ * "log in again and lose everything downloaded so far".
+ *
+ * @param {object} [opts]
+ * @param {boolean} [opts.silent] - skip the "resuming..." status text (used
+ *   when this runs as a background recovery during an active download,
+ *   where that status line would just be visual noise/overwrite progress).
+ * @returns {Promise<boolean>} true if state.mtSessionId now holds a fresh,
+ *   logged-in session.
+ */
+export async function attemptSessionResume({ silent = false } = {}) {
+    const backend = mtBackend();
+    if (!backend) return false;
+    if (!hasSavedSessionString()) return false;
 
     if (!isCryptoSupported()) {
-        // A saved session string exists (saved in a different, crypto-capable
-        // context) but this browser/context can't decrypt it. Don't prompt
-        // for a PIN just to fail — clear the now-unusable saved session and
-        // let the user log in normally instead.
         clearSavedSessionString();
         log('ℹ️ Saved login can\'t be restored in this browser (missing crypto support) — please log in again.', 'info');
-        return;
+        return false;
     }
 
     const pin = getPin('Enter your PIN to resume your saved Telegram login:');
-    if (!pin) return; // user cancelled — stay logged out, no harm done
+    if (!pin) return false; // user cancelled — stay logged out, no harm done
 
     let savedSessionString;
     try {
@@ -72,11 +89,11 @@ export async function checkMtStatus() {
     } catch {
         log('❌ Wrong PIN — could not unlock saved login. Please log in again.', 'error');
         state.sessionPin = null;
-        return;
+        return false;
     }
 
     try {
-        setMtStatus('Resuming previous login…');
+        if (!silent) setMtStatus('Resuming previous login…');
         const res = await fetch(`${backend}/auth/resume`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -86,16 +103,19 @@ export async function checkMtStatus() {
         if (res.ok && data.status === 'logged_in') {
             state.mtSessionId = data.sessionId;
             localStorage.setItem('telegrab-mt-session', state.mtSessionId);
-            showLoggedIn(true);
-            setMtStatus('');
-            log('🔐 Logged back in automatically (session resumed).', 'done');
-            return;
+            if (!silent) {
+                setMtStatus('');
+                log('🔐 Logged back in automatically (session resumed).', 'done');
+            }
+            return true;
         }
         // Saved session no longer valid — clear it so we don't keep retrying.
         clearSavedSessionString();
-        setMtStatus('');
+        if (!silent) setMtStatus('');
+        return false;
     } catch {
-        setMtStatus('');
+        if (!silent) setMtStatus('');
+        return false;
     }
 }
 
