@@ -68,3 +68,36 @@ working as before).
   logs everyone out. For production, persist `client.session.save()` (a
   string) somewhere safe per user and reload it with `new StringSession(saved)`.
 - Never commit your `.env` / API_HASH to a public repo.
+
+## Development
+
+```bash
+npm install        # installs runtime deps + eslint/prettier/typescript
+npm test           # unit tests (CDN URL logic, file types) + auth-flow integration tests
+npm run lint        # ESLint
+npm run lint:fix    # ESLint --fix
+npm run format       # Prettier, writes changes
+npm run format:check # Prettier, check only (CI-friendly)
+npm run typecheck    # tsc --noEmit over both frontend (DOM) and backend (Node) JSDoc types
+```
+
+**Project layout for testability:**
+- `app.js` exports `createApp({ apiId, apiHash, TelegramClientClass, StringSessionClass, store, allowedOrigin })` —
+  a plain Express app factory. `server.js` is a thin entry point that wires in
+  the real GramJS classes, env vars, and calls `.listen()`.
+- `tests/authFlow.test.js` calls `createApp()` directly with a fake
+  `TelegramClient`/`StringSession`, so the whole `/auth/*` flow (including
+  the 2FA branch and field-name validation) runs as real HTTP requests
+  against a real Express app, with zero network access or Telegram
+  credentials required.
+- `js/cdnUrlUtils.js` and `js/fileTypes.js` hold pure, DOM-free logic
+  (CDN URL construction/validation, file-type detection) split out
+  specifically so `tests/cdnUrlUtils.test.mjs` / `tests/fileTypes.test.mjs`
+  can unit-test them directly, without a browser.
+- Magic numbers live in `js/constants.js` (frontend) and `constants.js`
+  (backend) rather than inline.
+- Type-checking is JSDoc-based (`// @ts-check`-style, via `tsconfig.json` /
+  `tsconfig.backend.json` with `checkJs: true`) rather than a full
+  `.js` → `.ts` rewrite, so there's no build step or bundler change — it's
+  purely a static-analysis pass over the existing files.
+

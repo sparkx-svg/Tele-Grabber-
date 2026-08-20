@@ -1,0 +1,15 @@
+{
+  "printWidth": 120,
+  "tabWidth": 4,
+  "useTabs": false,
+  "semi": true,
+  "singleQuote": true,
+  "trailingComma": "es5",
+  "arrowParens": "always",
+  "overrides": [
+    {
+      "files": ["server.js", "app.js", "constants.js", "store/**/*.js", "tests/*.test.js"],
+      "options": { "tabWidth": 2 }
+    }
+  ]
+}

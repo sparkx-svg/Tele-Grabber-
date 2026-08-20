@@ -4,7 +4,14 @@
   "description": "MTProto (user login) backend for TeleGrab Pro — supports downloads up to 2GB (4GB with Telegram Premium)",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test tests/",
+    "test:watch": "node --test --watch tests/",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.backend.json"
   },
   "dependencies": {
     "telegram": "^2.22.2",
@@ -15,6 +22,15 @@
   },
   "optionalDependencies": {
     "ioredis": "^5.4.1"
+  },
+  "devDependencies": {
+    "eslint": "^9.9.0",
+    "@eslint/js": "^9.9.0",
+    "globals": "^15.9.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.3.3",
+    "typescript": "^5.5.4",
+    "@types/node": "^20.14.0"
   },
   "engines": {
     "node": ">=18"
