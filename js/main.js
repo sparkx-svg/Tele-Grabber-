@@ -5,6 +5,7 @@ import { pickFolder, resetFolder, restoreFolderDisplay } from './storage.js';
 import { isValidCdnUrl, suggestCdnUrls } from './cdnResolver.js';
 import { downloadTelegramFile, grabAny } from './download.js';
 import { initAuth } from './auth.js';
+import { BULK_QUEUE_POLL_INTERVAL_MS } from './constants.js';
 
 // ===== Global safety net =====
 // Every async call site in this app is meant to catch its own errors, but
@@ -92,7 +93,7 @@ dom.bulkGrabBtn.addEventListener('click', async () => {
                 await new Promise((resolve) => {
                     const check = () => {
                         if (!state.isDownloading) resolve();
-                        else setTimeout(check, 300);
+                        else setTimeout(check, BULK_QUEUE_POLL_INTERVAL_MS);
                     };
                     check();
                 });

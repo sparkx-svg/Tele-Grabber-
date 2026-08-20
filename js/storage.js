@@ -1,6 +1,7 @@
 import { dom } from './dom.js';
 import { state } from './state.js';
 import { log } from './ui.js';
+import { PBKDF2_ITERATIONS, AES_KEY_LENGTH_BITS, PBKDF2_SALT_LENGTH_BYTES, AES_GCM_IV_LENGTH_BYTES, MIN_PIN_LENGTH } from './constants.js';
 
 // ===== Folder picker (File System Access API) =====
 export async function pickFolder() {
@@ -77,17 +78,17 @@ async function deriveKey(pin, salt) {
     const enc = new TextEncoder();
     const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(pin), 'PBKDF2', false, ['deriveKey']);
     return crypto.subtle.deriveKey(
-        { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+        { name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
         keyMaterial,
-        { name: 'AES-GCM', length: 256 },
+        { name: 'AES-GCM', length: AES_KEY_LENGTH_BITS },
         false,
         ['encrypt', 'decrypt']
     );
 }
 
 async function encryptSessionString(plaintext, pin) {
-    const salt = crypto.getRandomValues(new Uint8Array(16));
-    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const salt = crypto.getRandomValues(new Uint8Array(PBKDF2_SALT_LENGTH_BYTES));
+    const iv = crypto.getRandomValues(new Uint8Array(AES_GCM_IV_LENGTH_BYTES));
     const key = await deriveKey(pin, salt);
     const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(plaintext));
     const combined = new Uint8Array(salt.length + iv.length + ciphertext.byteLength);
@@ -99,9 +100,9 @@ async function encryptSessionString(plaintext, pin) {
 
 async function decryptSessionString(stored, pin) {
     const combined = Uint8Array.from(atob(stored), (c) => c.charCodeAt(0));
-    const salt = combined.slice(0, 16);
-    const iv = combined.slice(16, 28);
-    const ciphertext = combined.slice(28);
+    const salt = combined.slice(0, PBKDF2_SALT_LENGTH_BYTES);
+    const iv = combined.slice(PBKDF2_SALT_LENGTH_BYTES, PBKDF2_SALT_LENGTH_BYTES + AES_GCM_IV_LENGTH_BYTES);
+    const ciphertext = combined.slice(PBKDF2_SALT_LENGTH_BYTES + AES_GCM_IV_LENGTH_BYTES);
     const key = await deriveKey(pin, salt);
     const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
     return new TextDecoder().decode(plaintext);
@@ -119,7 +120,7 @@ export async function saveEncryptedSessionString(plainSessionString) {
         log('ℹ️ Your browser doesn\'t support the encryption needed to save your login — you\'ll just need to log in again if the backend restarts. Everything else works normally.', 'info');
         return;
     }
-    const pin = getPin('Set a PIN to protect your saved Telegram login on this device (4+ digits, remember it — it cannot be recovered):');
+    const pin = getPin(`Set a PIN to protect your saved Telegram login on this device (${MIN_PIN_LENGTH}+ digits, remember it — it cannot be recovered):`);
     if (!pin) {
         log('⚠️ No PIN set — login won\'t survive a backend restart. You can still use the app normally.', 'warn');
         return;

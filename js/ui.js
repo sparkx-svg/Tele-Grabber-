@@ -1,5 +1,13 @@
 import { dom } from './dom.js';
 import { state } from './state.js';
+import { HASH_SIZE_LIMIT_BYTES, BYTES_PER_MB } from './constants.js';
+import { getFileType, ALLOWED_EXTENSIONS, FILE_TYPES } from './fileTypes.js';
+
+// Re-exported for backward compatibility — other modules (download.js,
+// cdnResolver.js) import these from here as well as from fileTypes.js
+// directly. The actual definitions live in fileTypes.js, which has no DOM
+// dependency and is unit-tested in isolation.
+export { getFileType, ALLOWED_EXTENSIONS, FILE_TYPES };
 
 // ===== Logging =====
 export function log(msg, type = 'info') {
@@ -36,41 +44,18 @@ export function initSettingsToggle() {
 }
 
 // ===== File type detection =====
-const FILE_TYPES = {
-    zip: '📦 ZIP Archive', rar: '📦 RAR Archive', '7z': '📦 7-Zip Archive', gz: '📦 GZ Archive',
-    bz2: '📦 BZ2 Archive', xz: '📦 XZ Archive', tar: '📦 TAR Archive',
-    pdf: '📄 PDF Document', doc: '📄 Word Document', docx: '📄 Word Document',
-    xls: '📊 Excel Spreadsheet', xlsx: '📊 Excel Spreadsheet',
-    ppt: '📽️ PowerPoint', pptx: '📽️ PowerPoint',
-    mp4: '🎬 MP4 Video', mkv: '🎬 MKV Video', avi: '🎬 AVI Video', mov: '🎬 MOV Video',
-    wmv: '🎬 WMV Video', flv: '🎬 FLV Video', webm: '🎬 WebM Video',
-    mp3: '🎵 MP3 Audio', wav: '🎵 WAV Audio', flac: '🎵 FLAC Audio', aac: '🎵 AAC Audio', ogg: '🎵 OGG Audio',
-    jpg: '🖼️ JPEG Image', jpeg: '🖼️ JPEG Image', png: '🖼️ PNG Image', gif: '🖼️ GIF Image',
-    bmp: '🖼️ BMP Image', webp: '🖼️ WebP Image', svg: '🖼️ SVG Image',
-    exe: '⚙️ Windows Executable', msi: '⚙️ Windows Installer', apk: '📱 Android APK',
-    dmg: '💻 Mac DMG', pkg: '💻 Mac PKG',
-    iso: '💿 ISO Disk Image', img: '💿 IMG Disk Image', bin: '💿 BIN Disk Image',
-    txt: '📝 Text File', log: '📝 Log File',
-    csv: '📊 CSV Data', json: '📊 JSON Data', xml: '📊 XML Data', yml: '📊 YAML Data', yaml: '📊 YAML Data',
-};
-
-export function getFileType(url) {
-    const ext = url.split('.').pop().toLowerCase();
-    return FILE_TYPES[ext] || `📁 File (${ext.toUpperCase() || 'unknown'})`;
-}
-
-export const ALLOWED_EXTENSIONS = new Set(Object.keys(FILE_TYPES));
+// Moved to fileTypes.js (pure, no DOM dependency) and re-exported above.
 
 // ===== Progress bar rendering =====
 export function renderProgress(received, total, elapsedSeconds) {
     const pct = total ? ((received / total) * 100).toFixed(1) : '?';
-    const receivedMB = (received / 1024 / 1024).toFixed(1);
-    const totalMB = total ? (total / 1024 / 1024).toFixed(1) : '?';
+    const receivedMB = (received / BYTES_PER_MB).toFixed(1);
+    const totalMB = total ? (total / BYTES_PER_MB).toFixed(1) : '?';
     dom.progressFill.style.width = total ? `${(received / total) * 100}%` : '50%';
     dom.progressPercent.textContent = total ? `${pct}%` : '...';
     dom.progressSize.textContent = `${receivedMB} MB / ${totalMB} MB`;
     if (elapsedSeconds > 0.5) {
-        dom.progressSpeed.textContent = ((received / 1024 / 1024) / elapsedSeconds).toFixed(1) + ' MB/s';
+        dom.progressSpeed.textContent = ((received / BYTES_PER_MB) / elapsedSeconds).toFixed(1) + ' MB/s';
     }
 }
 
@@ -95,11 +80,13 @@ export function finishProgressUI() {
 // buffer at once. On mobile browsers this can silently fail, hang, or crash
 // the tab for files in the several-hundred-MB+ range, so files above the
 // limit skip hashing entirely rather than risk breaking the download itself.
-const HASH_SIZE_LIMIT_BYTES = 300 * 1024 * 1024; // 300MB
-
 export async function hashAndDisplay(blob) {
     if (blob.size > HASH_SIZE_LIMIT_BYTES) {
-        log(`ℹ️ Skipping SHA256 (file is ${(blob.size / 1024 / 1024).toFixed(0)}MB — over the ${HASH_SIZE_LIMIT_BYTES / 1024 / 1024}MB limit for hashing on-device).`, 'info');
+        log(`ℹ️ Skipping SHA256 (file is ${(blob.size / BYTES_PER_MB).toFixed(0)}MB — over the ${HASH_SIZE_LIMIT_BYTES / BYTES_PER_MB}MB limit for hashing on-device).`, 'info');
+        return;
+    }
+    if (typeof crypto === 'undefined' || !crypto.subtle) {
+        log('ℹ️ Skipping SHA256 — this browser doesn\'t support the Web Crypto API needed to hash files.', 'info');
         return;
     }
     try {

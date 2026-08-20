@@ -5,16 +5,17 @@ import { saveFileWithFolder } from './storage.js';
 import { isValidCdnUrl, resolveTelegramLink } from './cdnResolver.js';
 import { mtBackend } from './auth.js';
 import { isRetryableStatus, isTransientNetworkError, backoffDelay, sleep } from './net.js';
+import { MAX_STREAM_RETRIES, BYTES_PER_MB, PAUSE_POLL_INTERVAL_MS } from './constants.js';
 
 const DEFAULT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
-const MAX_STREAM_RETRIES = 6; // network hiccups mid-download, not brute-force probes — worth persisting through
+const MS_PER_SECOND = 1000;
 
 // ===== Wait out a pause loop =====
 function waitWhilePaused() {
     return new Promise((resolve) => {
         const check = () => {
             if (!state.paused) resolve();
-            else setTimeout(check, 200);
+            else setTimeout(check, PAUSE_POLL_INTERVAL_MS);
         };
         check();
     });
@@ -79,7 +80,7 @@ export async function downloadResumable({ requestFactory, fileName }) {
             if (!isTransientNetworkError(err) || attempt >= MAX_STREAM_RETRIES) throw err;
             attempt += 1;
             const delay = backoffDelay(attempt);
-            log(`⚠️ Connection error (${err.message}) — retrying in ${(delay / 1000).toFixed(1)}s (attempt ${attempt}/${MAX_STREAM_RETRIES})...`, 'warn');
+            log(`⚠️ Connection error (${err.message}) — retrying in ${(delay / MS_PER_SECOND).toFixed(1)}s (attempt ${attempt}/${MAX_STREAM_RETRIES})...`, 'warn');
             await sleep(delay);
             continue;
         }
@@ -88,7 +89,7 @@ export async function downloadResumable({ requestFactory, fileName }) {
             if (isRetryableStatus(response.status) && attempt < MAX_STREAM_RETRIES) {
                 attempt += 1;
                 const delay = backoffDelay(attempt);
-                log(`⚠️ Server returned HTTP ${response.status} — retrying in ${(delay / 1000).toFixed(1)}s (attempt ${attempt}/${MAX_STREAM_RETRIES})...`, 'warn');
+                log(`⚠️ Server returned HTTP ${response.status} — retrying in ${(delay / MS_PER_SECOND).toFixed(1)}s (attempt ${attempt}/${MAX_STREAM_RETRIES})...`, 'warn');
                 await sleep(delay);
                 continue;
             }
@@ -110,14 +111,14 @@ export async function downloadResumable({ requestFactory, fileName }) {
             const contentLength = response.headers.get('content-length');
             totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
             state.totalBytes = totalBytes;
-            if (totalBytes > 0) log(`📊 File size: ${(totalBytes / 1024 / 1024).toFixed(1)} MB`, 'info');
+            if (totalBytes > 0) log(`📊 File size: ${(totalBytes / BYTES_PER_MB).toFixed(1)} MB`, 'info');
         }
 
         try {
             await readStreamInto(response, chunks, (len) => {
                 received += len;
                 state.receivedBytes = received;
-                const elapsed = (performance.now() - state.startTime) / 1000;
+                const elapsed = (performance.now() - state.startTime) / MS_PER_SECOND;
                 renderProgress(received, totalBytes, elapsed);
             });
             break; // stream finished cleanly
@@ -129,7 +130,7 @@ export async function downloadResumable({ requestFactory, fileName }) {
             if (attempt >= MAX_STREAM_RETRIES) throw err;
             attempt += 1;
             const delay = backoffDelay(attempt);
-            log(`⚠️ Connection dropped mid-download (${err.message}) — resuming from ${(received / 1024 / 1024).toFixed(1)} MB in ${(delay / 1000).toFixed(1)}s (attempt ${attempt}/${MAX_STREAM_RETRIES})...`, 'warn');
+            log(`⚠️ Connection dropped mid-download (${err.message}) — resuming from ${(received / BYTES_PER_MB).toFixed(1)} MB in ${(delay / MS_PER_SECOND).toFixed(1)}s (attempt ${attempt}/${MAX_STREAM_RETRIES})...`, 'warn');
             await sleep(delay);
             // loop back — requestFactory(received) will issue a Range request
         }
@@ -142,7 +143,7 @@ export async function downloadResumable({ requestFactory, fileName }) {
     const resolvedFileName = typeof fileName === 'function' ? fileName() : fileName;
     const blob = new Blob(chunks);
     await saveFileWithFolder(blob, resolvedFileName);
-    log(`✅ Complete: ${(blob.size / 1024 / 1024).toFixed(2)} MB`, 'done');
+    log(`✅ Complete: ${(blob.size / BYTES_PER_MB).toFixed(2)} MB`, 'done');
     await hashAndDisplay(blob);
     return blob;
 }
