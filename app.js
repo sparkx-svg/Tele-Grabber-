@@ -340,6 +340,14 @@ function createApp({ apiId, apiHash, allowedOrigin = '*', TelegramClientClass, S
       // option's name/shape, resumed downloads would fall back to re-sending
       // from byte 0 rather than corrupting anything — worth a smoke test
       // against a mid-download disconnect after bumping the dependency.
+      // Diagnostic only: logs RSS every ~50MB transferred so a memory-capped
+      // host (e.g. a 256MB free-tier container) shows a clear trend in its
+      // log viewer leading up to a mid-download failure — confirms whether
+      // the process is genuinely running out of room versus something else
+      // (a network drop, a host timeout) killing the connection instead.
+      const MEMORY_LOG_INTERVAL_BYTES = 50 * BYTES_PER_MB;
+      let bytesSinceLastMemLog = 0;
+
       let bytesSent = 0;
       for await (const chunk of client.iterDownload({
         file: msg.media,
@@ -348,6 +356,14 @@ function createApp({ apiId, apiHash, allowedOrigin = '*', TelegramClientClass, S
         workers: 1, // sequential — guarantees correct byte order
       })) {
         bytesSent += chunk.length;
+        bytesSinceLastMemLog += chunk.length;
+        if (bytesSinceLastMemLog >= MEMORY_LOG_INTERVAL_BYTES) {
+          bytesSinceLastMemLog = 0;
+          const mem = process.memoryUsage();
+          console.log(
+            `📊 download progress: ${(bytesSent / BYTES_PER_MB).toFixed(0)}MB sent — RSS ${(mem.rss / BYTES_PER_MB).toFixed(0)}MB, heapUsed ${(mem.heapUsed / BYTES_PER_MB).toFixed(0)}MB`,
+          );
+        }
         const ok = res.write(chunk);
         if (!ok) await new Promise((r) => res.once('drain', r));
       }
