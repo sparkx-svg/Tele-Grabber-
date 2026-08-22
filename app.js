@@ -21,6 +21,7 @@ const {
   CONNECT_RETRY_BASE_DELAY_MS,
   AUTH_SETTLE_DELAY_MS,
   DOWNLOAD_CHUNK_SIZE_BYTES,
+  BYTES_PER_MB,
 } = require('./constants');
 
 function sleep(ms) {
