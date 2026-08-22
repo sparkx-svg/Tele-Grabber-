@@ -54,6 +54,71 @@ export async function saveFileWithFolder(blob, fileName) {
     URL.revokeObjectURL(url);
 }
 
+// ===== OPFS (Origin Private File System) — the mobile-friendly write target =====
+// The folder-picker API above (showDirectoryPicker/createWritable against a
+// *user-visible* folder) is desktop-only — Chrome for Android never exposes
+// it. Without it, downloads used to fall back to buffering the whole file as
+// an in-memory array of chunks, which is exactly what makes a phone's tab
+// run out of memory partway through a multi-GB file.
+//
+// OPFS is a *separate* API that Chrome on Android does support: it's a
+// private, sandboxed disk area (invisible in the normal file browser) that
+// still lets us open a real FileSystemWritableFileStream and write chunks to
+// actual storage instead of RAM. We use it purely as scratch space during
+// the download, then hand the finished file off to the browser's normal
+// download mechanism (which streams it out of OPFS, not out of a JS array)
+// so it lands in the user's visible Downloads folder like any other file.
+const OPFS_TEMP_DIR = 'telegrab-tmp';
+
+export function isOpfsSupported() {
+    return typeof navigator !== 'undefined' && !!navigator.storage && typeof navigator.storage.getDirectory === 'function';
+}
+
+async function getOpfsTempDir() {
+    const root = await navigator.storage.getDirectory();
+    return root.getDirectoryHandle(OPFS_TEMP_DIR, { create: true });
+}
+
+// Opens (creating if needed) a writable OPFS-backed file to use as a
+// download's scratch buffer. Returns both the handle (needed later to read
+// the finished bytes back out) and an open writable stream.
+export async function openOpfsWritable(fileName) {
+    const dir = await getOpfsTempDir();
+    const fileHandle = await dir.getFileHandle(fileName, { create: true });
+    const writable = await fileHandle.createWritable();
+    return { fileHandle, writable };
+}
+
+// Streams a finished (or partial) OPFS-backed file out to the user's real
+// Downloads folder via the browser's normal Blob-download mechanism, then
+// removes the OPFS scratch copy. Because `getFile()` returns a lazy File
+// handle rather than loading the content into the JS heap, this handoff
+// stays memory-light even for multi-GB files — the browser reads the bytes
+// off disk (OPFS) as it writes them to Downloads, the same way it would for
+// any other object URL download.
+export async function deliverOpfsFileToDownloads(fileHandle, downloadName) {
+    const file = await fileHandle.getFile();
+    const url = URL.createObjectURL(file);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = downloadName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    return file;
+}
+
+export async function deleteOpfsFile(fileName) {
+    try {
+        const dir = await getOpfsTempDir();
+        await dir.removeEntry(fileName);
+    } catch {
+        // best-effort cleanup — a leftover temp file isn't worth surfacing
+        // an error over, and it'll just get overwritten next time anyway
+    }
+}
+
 // ===== Encrypt the MTProto session string before it touches localStorage =====
 // A raw session string in localStorage is effectively a saved password for
 // the Telegram account — anyone with access to the browser's storage (another

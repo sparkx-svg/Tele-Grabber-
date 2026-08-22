@@ -1,7 +1,7 @@
 import { dom } from './dom.js';
 import { state } from './state.js';
 import { log, renderProgress, resetProgressUI, finishProgressUI, hashAndDisplay, getFileType } from './ui.js';
-import { saveFileWithFolder } from './storage.js';
+import { saveFileWithFolder, isOpfsSupported, openOpfsWritable, deliverOpfsFileToDownloads, deleteOpfsFile } from './storage.js';
 import { isValidCdnUrl, resolveTelegramLink } from './cdnResolver.js';
 import { mtBackend, attemptSessionResume } from './auth.js';
 import { isRetryableStatus, isTransientNetworkError, backoffDelay, sleep } from './net.js';
@@ -81,28 +81,46 @@ export async function downloadResumable({ requestFactory, fileName }) {
     state.totalBytes = 0;
 
     let resolvedFileName = typeof fileName === 'string' ? fileName : null;
-    let writable = null;      // open FileSystemWritableFileStream, when a save folder is selected
-    const chunks = [];        // in-memory fallback, used only when no folder is selected (or opening the file failed)
+    let writable = null;      // open FileSystemWritableFileStream — either a user-picked folder (desktop) or OPFS scratch space (mobile fallback)
+    let opfsFileHandle = null; // set only when `writable` is backed by OPFS, so completion knows to hand it off to Downloads afterward
+    const chunks = [];        // last-resort in-memory fallback, used only if neither a real folder nor OPFS is available
 
-    // Discards whatever's been written/buffered so far and, if a save
-    // folder is selected, opens a fresh (truncating) writable for
-    // `resolvedFileName`. Used both for the very first write and for a
-    // forced restart-from-scratch (server doesn't support Range resume).
+    // Discards whatever's been written/buffered so far and opens a fresh
+    // (truncating) writable for `resolvedFileName` — preferring, in order:
+    // 1. the user's picked folder (desktop File System Access API), 2. an
+    // OPFS scratch file (works on mobile, where the folder picker doesn't
+    // exist), 3. an in-memory array as a last resort. Used both for the
+    // very first write and for a forced restart-from-scratch (server
+    // doesn't support Range resume).
     async function resetSink() {
         if (writable) {
             try { await writable.abort(); } catch { /* best-effort — we're discarding this attempt anyway */ }
             writable = null;
         }
+        opfsFileHandle = null;
         chunks.length = 0;
+
         if (state.selectedFolderHandle && resolvedFileName) {
             try {
                 const fileHandle = await state.selectedFolderHandle.getFileHandle(resolvedFileName, { create: true });
                 writable = await fileHandle.createWritable();
+                return;
             } catch (err) {
-                log(`⚠️ Could not open "${resolvedFileName}" for incremental writing (${err.message}) — buffering in memory instead.`, 'warn');
-                writable = null;
+                log(`⚠️ Could not open "${resolvedFileName}" for incremental writing (${err.message}) — trying another storage method.`, 'warn');
             }
         }
+
+        if (resolvedFileName && isOpfsSupported()) {
+            try {
+                const opened = await openOpfsWritable(resolvedFileName);
+                writable = opened.writable;
+                opfsFileHandle = opened.fileHandle;
+                return;
+            } catch (err) {
+                log(`⚠️ Could not open device storage for "${resolvedFileName}" (${err.message}) — buffering in memory instead.`, 'warn');
+            }
+        }
+        // Falls through to the in-memory `chunks` array if both of the above failed/are unavailable.
     }
 
     async function writeChunk(value) {
@@ -180,7 +198,15 @@ export async function downloadResumable({ requestFactory, fileName }) {
             if (err.message === 'Download cancelled') {
                 // The user explicitly stopped it, but whatever did download
                 // is still theirs — commit it rather than discarding it.
-                if (writable) { try { await writable.close(); } catch { /* best-effort */ } }
+                if (writable) {
+                    try {
+                        await writable.close();
+                        if (opfsFileHandle) {
+                            await deliverOpfsFileToDownloads(opfsFileHandle, resolvedFileName);
+                            await deleteOpfsFile(resolvedFileName);
+                        }
+                    } catch { /* best-effort */ }
+                }
                 throw err;
             }
             if (attempt >= MAX_STREAM_RETRIES) {
@@ -188,6 +214,14 @@ export async function downloadResumable({ requestFactory, fileName }) {
                     try {
                         await writable.close();
                         const totalLabel = totalBytes ? `${(totalBytes / BYTES_PER_MB).toFixed(1)} MB` : 'unknown size';
+                        if (opfsFileHandle) {
+                            // Mobile/OPFS path: the partial bytes are sitting in private
+                            // scratch storage the user can't otherwise see or reach —
+                            // hand them off to a real Downloads file rather than
+                            // stranding them, then clean up the scratch copy.
+                            await deliverOpfsFileToDownloads(opfsFileHandle, resolvedFileName);
+                            await deleteOpfsFile(resolvedFileName);
+                        }
                         log(`💾 Kept ${(received / BYTES_PER_MB).toFixed(1)} MB of ${totalLabel} as a partial file: "${resolvedFileName}". Re-running the download will overwrite it and start over.`, 'warn');
                     } catch (closeErr) {
                         log(`⚠️ Could not save the partial download: ${closeErr.message}`, 'warn');
@@ -204,6 +238,19 @@ export async function downloadResumable({ requestFactory, fileName }) {
             await sleep(delay);
             // loop back — requestFactory(received) will issue a Range request
         }
+    }
+
+    if (writable && opfsFileHandle) {
+        // Mobile/OPFS path: the file streamed to private scratch storage
+        // with near-constant memory use, exactly like the real-folder path
+        // below — it just isn't visible to the user yet. Close it out, hand
+        // it off to a real Downloads file, then remove the scratch copy.
+        await writable.close();
+        const file = await deliverOpfsFileToDownloads(opfsFileHandle, resolvedFileName);
+        log(`✅ Complete: ${(received / BYTES_PER_MB).toFixed(2)} MB saved to "${resolvedFileName}"`, 'done');
+        await hashAndDisplay(file);
+        await deleteOpfsFile(resolvedFileName);
+        return file;
     }
 
     if (writable) {
