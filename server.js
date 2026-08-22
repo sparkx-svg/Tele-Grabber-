@@ -13,8 +13,8 @@
 // instead of a real account — see tests/authFlow.test.js.
 
 require('dotenv').config();
-const { TelegramClient } = require('telegram');
-const { StringSession } = require('telegram/sessions');
+const { TelegramClient } = require('teleproto');
+const { StringSession } = require('teleproto/sessions');
 const { createSessionStore } = require('./store/sessionStore');
 const { createApp } = require('./app');
 

@@ -14,7 +14,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.backend.json"
   },
   "dependencies": {
-    "telegram": "^2.22.2",
+    "teleproto": "^1.225.0",
     "express": "^4.19.2",
     "express-rate-limit": "^7.4.0",
     "cors": "^2.8.5",
